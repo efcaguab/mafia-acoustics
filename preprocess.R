@@ -1,7 +1,7 @@
-## KAUST -MAFIA STUDY
+## KAUST - WHALE SHARK MAFIA STUDY Clean the data. Correct for clock drift.
+# Remove first two days of data for each shark and remove false detections.
 
 ## LOAD LIBRARIES ----------------------------------------------------------
-
 
 library (VTrack)
 library (ggplot2)
@@ -16,7 +16,7 @@ MAFIA.DETECTIONS$DATETIME <- as.POSIXct (as.POSIXlt (MAFIA.DETECTIONS$DATETIME, 
 ## CORRECT CLOCK DRIFT --------------------------------------------------------
 
 # Read CSV events file 
-RECEIVER.EVENTS <- read.csv ("../Raw Data/AllMafiaEvents20140715")
+RECEIVER.EVENTS <- read.csv ("../Raw Data/AllMafiaEvents20140715.csv")
 names (RECEIVER.EVENTS) <- c ("DATETIME", "RECEIVERID", "DESC", "DATA", "UNITS")
 RECEIVER.EVENTS$DATETIME <- as.POSIXct (RECEIVER.EVENTS$DATETIME, tz ="UTC")
 RECEIVER.EVENTS$DATETIME <- as.POSIXct (as.POSIXlt (RECEIVER.EVENTS$DATETIME, tz="Africa/Dar_es_Salaam"))
@@ -41,12 +41,14 @@ PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 07:42:54")] <- PC.TIM
 
 # Correct time drift 
 receiverIDs <- levels (MAFIA.DETECTIONS$RECEIVERID)
+pb <- txtProgressBar(max=length (receiverIDs), style = 3)
 for (i in 1:length (receiverIDs)){
+  setTxtProgressBar (pb, i)
   receiver.PC.TIMES <- PC.TIMES[PC.TIMES$RECEIVERID == receiverIDs[i], ]
   drift <- approx (receiver.PC.TIMES$DATA, receiver.PC.TIMES$DATA - receiver.PC.TIMES$DATETIME, MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME)$y
   MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME + drift
 }
-
+close (pb)
 rm (drift, i, receiverIDs, receiver.PC.TIMES)
 
 ## ASSIGN DETECTIONS TO STATIONS ---------------------------------------------
@@ -61,30 +63,33 @@ R.EVE$RECEIVERID <- ARRAY.EVENTS$REC
 ARRAY.EVENTS <- R.EVE
 
 # Read stations file and assign detections to stations
-STATIONS <- read.csv ("../Raw Data//Stations_20130205.csv")
+STATIONS <- read.csv ("../Raw Data/Stations_20130205.csv")
 # Assign station and location
+pb <- txtProgressBar(max=length (ARRAY.EVENTS [,1]), style = 3)
 for (i in 1:length (ARRAY.EVENTS [,1])){  # For each event
   # If is a deployment change the station for the future
   if (ARRAY.EVENTS$EVENT[i] == "DEP"){  
-    message ("    Analyzing deployment of ", ARRAY.EVENTS$RECEIVERID[i], " on ", 
-             floor_date (ARRAY.EVENTS$DATETIME[i], "day"), " at   Station ", ARRAY.EVENTS$STATIONNAME[i])
+    # message ("    Analyzing deployment of ", ARRAY.EVENTS$RECEIVERID[i], " on ", 
+    #         floor_date (ARRAY.EVENTS$DATETIME[i], "day"), " at   Station ", ARRAY.EVENTS$STATIONNAME[i])
     replace.index <- (as.character (ARRAY.EVENTS$RECEIVERID[i]) == as.character(MAFIA.DETECTIONS$RECEIVERID)) & (MAFIA.DETECTIONS$DATETIME >= ARRAY.EVENTS$DATETIME[i]) 
     # Include station
-    MAFIA.DETECTIONS$STATIONNAME [replace.index] <- factor(ARRAY.EVENTS$STATIONNAME[i], levels=levels(ARRAY.EVENTS$STATIONNAME)) 
+    MAFIA.DETECTIONS$STATIONNAME [replace.index] <- as.character (ARRAY.EVENTS$STATIONNAME[i])
   }
   # If is a retrieval delete data for the future
   else {  
-    message ("    Analyzing retrieval  of ", ARRAY.EVENTS$RECEIVERID[i], " on ", 
-             floor_date (ARRAY.EVENTS$DATETIME[i], "day"), " from Station ", ARRAY.EVENTS$STA[i])
+    # message ("    Analyzing retrieval  of ", ARRAY.EVENTS$RECEIVERID[i], " on ", 
+    #        floor_date (ARRAY.EVENTS$DATETIME[i], "day"), " from Station ", ARRAY.EVENTS$STA[i])
     replace.index <- (as.character (ARRAY.EVENTS$RECEIVERID[i]) == as.character(MAFIA.DETECTIONS$RECEIVERID)) & 
       (MAFIA.DETECTIONS$DATETIME >= ARRAY.EVENTS$DATETIME[i]) 
     MAFIA.DETECTIONS$STATIONNAME[replace.index] <- NA
   }
+  setTxtProgressBar (pb, i)
 }
-
+close (pb)
 # Delete detections outside valid intervals
-MAFIA.DETECTIONS <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$STATIONNAME != 'Unknown', ]
+MAFIA.DETECTIONS <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$STATIONNAME != 'Unknown' & !is.na (MAFIA.DETECTIONS$STATIONNAME), ]
 
+save (MAFIA.DETECTIONS, file ="../Processed Data/AllDetections.RData")
 rm (R.EVE, i, replace.index)
 
 ## SELECT WHALE SHARK TAGS, REMOVE FALSE DETECTIONS ---------------------------
@@ -109,4 +114,5 @@ for (i in 1: nrow(WS.TAGS)){
 DET.WS$TRANSMITTERID <- factor (DET.WS$TRANSMITTERID)
 rm (i, next2.days, replace.index)
 
-save (DET.WS, WS.TAGS, STATIONS, file = "../Processed Data/FilteredDetections.RData")
+save (DET.WS, WS.TAGS, STATIONS, file = "../Processed Data/WSDetections.RData")
+
