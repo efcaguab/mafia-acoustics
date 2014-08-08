@@ -89,7 +89,7 @@ close (pb)
 # Delete detections outside valid intervals
 MAFIA.DETECTIONS <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$STATIONNAME != 'Unknown' & !is.na (MAFIA.DETECTIONS$STATIONNAME), ]
 
-save (MAFIA.DETECTIONS, file ="../Processed Data/AllDetections.RData")
+save (MAFIA.DETECTIONS, ARRAY.EVENTS, file ="../Processed Data/AllDetections.RData")
 rm (R.EVE, i, replace.index)
 
 ## SELECT WHALE SHARK TAGS, REMOVE FALSE DETECTIONS ---------------------------
