@@ -13,12 +13,12 @@ library (foreach)
 library (ggplot2)
 library (mgcv)
 library (doMC)
-
+registerDoMC (cores = 14)
 
 select <- dplyr::select
 # Function to calculate presence absence data ----------------------------------------------------------------
 
-pres.abs <- function (start.date, end.date, sightings, dates){
+pres.abs.rep <- function (start.date, end.date, sightings, dates){
   # Create a data frame with the detections
   sight <- data.frame (id = sightings, date = dates) %>%
     filter (date >= start.date, date <= end.date) %>%
@@ -26,10 +26,16 @@ pres.abs <- function (start.date, end.date, sightings, dates){
   
   # For each shark we'll start with the first detection only
   individuals <- levels (sight$id)
-  presence.absence <- foreach (i=1:length (individuals), .combine = rbind) %do% {
-    dates.tagged <- unique(sight$date)[unique(sight$date)>sight$date[match (individuals[i], sight$id)]]
+  presence.absence <- foreach (i=1:length (individuals), .combine = rbind, .inorder=FALSE) %dopar% {
+    dates.tagged <- unique(sight$date)[unique(sight$date)>=sight$date[match (individuals[i], sight$id)]]
     dates.present <- sight$date[sight$id == individuals[i]]
-    sight.shark <- data.frame (date = dates.tagged, present = dates.tagged %in% dates.present, id = individuals[i])
+    sight.shark <- foreach (j = 1:length (dates.present), .combine = rbind) %do% {
+      dates.tagged.since <- dates.tagged[dates.tagged >= dates.present[j]]
+      sight.shark.lag <- data.frame (date = dates.tagged.since, present = dates.tagged.since %in% dates.present, id = individuals[i]) %>%
+        mutate (lag = as.numeric (date) - as.numeric (min (date)))
+      return (sight.shark.lag)
+    }
+    return (sight.shark)
   } %>%
     mutate (day = yday (date), week = week (date), month = month(date))
   return (presence.absence)
@@ -41,7 +47,7 @@ start.date = min (ACO.WS.DAILY.PRES$DATE)
 end.date = max (ACO.WS.DAILY.PRES$DATE)
 sightings = ACO.WS.DAILY.PRES$ECOCEAN
 dates = ACO.WS.DAILY.PRES$DATE
-PADet <- pres.abs (start.date, end.date, sightings, dates) %>% 
+PADet <- pres.abs.rep (start.date, end.date, sightings, dates) %>% 
   arrange (date)
 
 # We will keep them separate for now because there are different explanatory variables 
@@ -83,14 +89,14 @@ PADet <- ddply (PADet, "date", function (x, times.in){
   x$configuration <- do.call (paste, as.list(stations.listening$station))
   x$nStations <- nrow (stations.listening)
   return (x)
-}, times.in = times.in) %>%
-  mutate (lag = as.numeric (date) - min (as.numeric (date)))
+}, times.in = times.in)# %>%
+#mutate (lag = as.numeric (date) - min (as.numeric (date)))
 
-# Calculate lags
-PADet <- ddply (PADet, "id", function (x){
-  x$lag <- as.numeric (x$date) - as.numeric (min(x$date)) + 1
-  return (x)
-})
+# # Calculate lags
+# PADet <- ddply (PADet, "id", function (x){
+#   x$lag <- as.numeric (x$date) - as.numeric (min(x$date)) + 1
+#   return (x)
+# })
 
 # Delete data for sharks that were known to loose their tag
 PADet <- ddply (PADet, "id", function (x, TAG.LOST){
@@ -104,30 +110,31 @@ PADet <- ddply (PADet, "id", function (x, TAG.LOST){
 }, TAG.LOST = TAG.LOST)
 
 # Lag Log
-PADet <- dplyr::mutate (PADet, lagl = log (lag))
-# Cycle
-PADet.Cycle.1 <- filter (PADet, day <= 60)
-PADet.Cycle.1$week <- PADet.Cycle.1$week + 53
-PADet.Cycle.1$day <- PADet.Cycle.1$day + 366
-PADet.Cycle.1$month <- PADet.Cycle.1$month + 12
-
-PADet.Cycle.2 <- filter (PADet, day >= 366 - 60)
-PADet.Cycle.2$week <- PADet.Cycle.2$week - 53
-PADet.Cycle.2$day <- PADet.Cycle.2$day - 366
-PADet.Cycle.2$month <- PADet.Cycle.2$month - 12
-
-PADet.Cycle <- rbind (PADet.Cycle.2, PADet, PADet.Cycle.1)
-
-
-
-# Create full model
-formulas <- vector ("list", 0)
-formulas[[1]] <- formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + sex + size + nStations) 
-formulas[[2]] <- formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + size + sharks.tagged + nStations) 
-formulas[[3]] <- formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + size + nStations) 
+PADet <- dplyr::mutate (PADet, lagl = log (lag + 1))
+# 
+# # Cycle
+# PADet.Cycle.1 <- filter (PADet, day <= 60)
+# PADet.Cycle.1$week <- PADet.Cycle.1$week + 53
+# PADet.Cycle.1$day <- PADet.Cycle.1$day + 366
+# PADet.Cycle.1$month <- PADet.Cycle.1$month + 12
+# 
+# PADet.Cycle.2 <- filter (PADet, day >= 366 - 60)
+# PADet.Cycle.2$week <- PADet.Cycle.2$week - 53
+# PADet.Cycle.2$day <- PADet.Cycle.2$day - 366
+# PADet.Cycle.2$month <- PADet.Cycle.2$month - 12
+# 
+# PADet.Cycle <- rbind (PADet.Cycle.2, PADet, PADet.Cycle.1)
+# 
+# 
+# 
+# # Create full model
+# formulas <- vector ("list", 0)
+# formulas[[1]] <- formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + sex + size + nStations) 
+# formulas[[2]] <- formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + size + sharks.tagged + nStations) 
+# formulas[[3]] <- formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + size + nStations) 
 
 args <- vector ("list", 0)
-args[[1]] <- list (formula = formula (present ~ s (day, bs = "cc") + s(lag, bs = "cr") + sex + size + nStations), data = filter (PADet, batch != "2014-1"), family = "binomial", gamma = 1.4)
+args[[1]] <- list (formula = formula (present ~ s (day, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet, family = "binomial", gamma = 1.4)
 args[[2]] <- list (formula = formula (present ~ s (day, bs = "cc") + s (lagl, bs = "cr") + sex + size  + nStations), data = PADet, family = "binomial", gamma = 1.4)
 args[[3]] <- list (formula = formula (present ~ s (day, bs = "cc") + sex + size + nStations + s(lagl, bs = "cr")), data = PADet, family = "binomial", gamma = 1.4, random=list(id=~1))
 args[[4]] <- list (formula = formula (present ~ s (day, bs = "cc") + sex + size + nStations + s(lagl, bs = "cr")), data = PADet, family = "binomial", gamma = 1.4, correlation = corAR1(form = ~ lag | id))
@@ -141,8 +148,10 @@ registerDoMC (cores = 14)
 md01 <- foreach (i=1:length (args)) %dopar% {
   do.call (gamm, args[[i]])
 }
-
-
+i <- 1
+md00 <- foreach (i=1:2) %dopar% {
+  do.call (gamm, args[[i]])
+}
 
 # All terms are significant for md04
 
