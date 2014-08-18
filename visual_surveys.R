@@ -91,11 +91,11 @@ ENCOUNTERS.WEEK$LEUE[is.na (ENCOUNTERS.WEEK$LEUE)] <- 0
 ENCOUNTERS.WEEK$LTEUE[is.na (ENCOUNTERS.WEEK$LTEUE)] <- 0
 # Include number of encounters
 
-pdf ("../Figures/Surveys.pdf", width = 3, height = 3/sqrt(2), pointsize = 1)
-ggplot(ENCOUNTERS.WEEK, aes (x = DATE.WEEK)) + 
-  geom_line (aes(y = LTSUE * max (N.INDIVIDUALS.TAGGED))) + geom_point (aes (y = TSUE* max (N.INDIVIDUALS.TAGGED))) +
-#  geom_line (aes (y = LTEUE), colour = 'gray') + geom_point (aes(y = TEUE), colour = 'gray') + 
-  theme_classic() + ylab ("Encounters per hour") + xlab ("Time") +  theme(text = element_text(size = 10))
-dev.off()
+# pdf ("../Figures/Surveys.pdf", width = 3, height = 3/sqrt(2), pointsize = 1)
+# ggplot(ENCOUNTERS.WEEK, aes (x = DATE.WEEK)) + 
+#   geom_line (aes(y = LTSUE * max (N.INDIVIDUALS.TAGGED))) + geom_point (aes (y = TSUE* max (N.INDIVIDUALS.TAGGED))) +
+# #  geom_line (aes (y = LTEUE), colour = 'gray') + geom_point (aes(y = TEUE), colour = 'gray') + 
+#   theme_classic() + ylab ("Encounters per hour") + xlab ("Time") +  theme(text = element_text(size = 10))
+# dev.off()
 
-save (ENCOUNTERS.WEEK, file = "../Processed Data/EncountersWeek.RData")
+save (ENCOUNTERS.WEEK, ENCOUNTERS, SURVEYS, SURVEYS.WEEK, file = "../Processed Data/EncountersWeek.RData")

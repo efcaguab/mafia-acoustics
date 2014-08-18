@@ -54,7 +54,7 @@ rm (drift, i, receiverIDs, receiver.PC.TIMES)
 ## ASSIGN DETECTIONS TO STATIONS ---------------------------------------------
 
 # Read and organize events (retrievals/deployments) data
-ARRAY.EVENTS <- read.csv ("../Raw Data/ArrayEvents_20140716.csv")
+ARRAY.EVENTS <- read.csv ("../Raw Data/ArrayEvents_20140808.csv")
 ARRAY.EVENTS <- ARRAY.EVENTS[(ARRAY.EVENTS$EVENT == "DEP") | (ARRAY.EVENTS$EVENT == "RET"), ]
 R.EVE <- data.frame(DATETIME = as.POSIXct (ARRAY.EVENTS$DATE, tz="Africa/Dar_es_Salaam")) 
 R.EVE$STATIONNAME <- factor(ARRAY.EVENTS$STATION)
@@ -95,7 +95,7 @@ rm (R.EVE, i, replace.index)
 ## SELECT WHALE SHARK TAGS, REMOVE FALSE DETECTIONS ---------------------------
 
 # Read file with Whale Shark Tag lists
-WS.TAGS <- read.csv ("../Raw Data/WSTags_20140515.csv")
+WS.TAGS <- read.csv ("../Raw Data/WSTags_20140808.csv")
 WS.TAGS$DATE <- as.POSIXct (WS.TAGS$DATE, format="%d/%m/%Y", tz = "Africa/Dar_es_Salaam")
 WS.TAGS$NAME <- WS.TAGS$COMMENT <- WS.TAGS$SHARK <- NULL
 

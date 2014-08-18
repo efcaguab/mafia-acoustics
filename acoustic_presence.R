@@ -4,6 +4,8 @@ load (file = "../Processed Data/WSDetections.RData")
 load (file = "../Processed Data/EncountersWeek.RData")
 
 library (lubridate)
+library (plyr)
+library (ggplot2)
 
 ## DAILY INDIVIDUALS  -------------------------------------------
 
@@ -106,23 +108,19 @@ DETECTIONS.WEEK$INDbyTAG <- with (DETECTIONS.WEEK, N.INDIVIDUALS/SHARKS.TAGGED)
 DETECTIONS.WEEK$INDbyEXP <- with (DETECTIONS.WEEK, N.INDIVIDUALS/EXP)
 DETECTIONS.WEEK$INDbyEXP.D <- with (DETECTIONS.WEEK, N.INDIVIDUALS/EXP.D)
 
-pdf ("../Figures/Individuals.pdf", width = 3*2, height = 3/sqrt(2), pointsize = 1)
-ggplot() + 
-  #geom_line (aes (y = scale (INDbySTA, center = F, scale = max (INDbySTA))), colour = 2) + 
-  #geom_line (aes (y = scale (INDbyTAG, center = F, scale = max (INDbyTAG))), colour = 3) + 
-  geom_point (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP, center = F, scale = max (INDbyEXP))), colour = 'grey50') +
-  geom_point (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP.D, center = F, scale = max (INDbyEXP.D))), colour = 'grey30') +
-  geom_line (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP, center = F, scale = max (INDbyEXP))), colour = 'grey50', linetype = 3) +
-  geom_line (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP.D, center = F, scale = max (INDbyEXP.D))), colour = 'grey30') +
-#  geom_line(aes(y = scale (N.INDIVIDUALS, center = F, scale = max (N.INDIVIDUALS))*max (N.INDIVIDUALS))) +
-  geom_line (data = ENCOUNTERS.WEEK, aes(x = DATE.WEEK, y = scale (LTSUE, center = F, scale = max (LTSUE))), colour = 'grey70', linetype = 2) + 
-  geom_point (data = ENCOUNTERS.WEEK, aes (x = DATE.WEEK, y = scale (TSUE, center = F, scale = max (LTSUE))), colour = 'grey70') +
-  theme_classic() + ylab ("Scaled number of individuals") + xlab ("Time") +  theme(text = element_text(size = 10))
-dev.off()
-ggplot(, aes ()) + 
-  geom_line (aes(y = LTSUE * max (N.INDIVIDUALS.TAGGED))) + geom_point (aes (y = TSUE* max (N.INDIVIDUALS.TAGGED))) +
+save (ACO.WS.DAILY.PRES, DETECTIONS.WEEK, file = "../Processed Data/AcousticPresence.RData")
+# 
+# pdf ("../Figures/Individuals.pdf", width = 3*2, height = 3/sqrt(2), pointsize = 1)
+# ggplot() + 
+#   #geom_line (aes (y = scale (INDbySTA, center = F, scale = max (INDbySTA))), colour = 2) + 
+#   #geom_line (aes (y = scale (INDbyTAG, center = F, scale = max (INDbyTAG))), colour = 3) + 
+#   geom_point (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP, center = F, scale = max (INDbyEXP))), colour = 'black') +
+#   # geom_point (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP.D, center = F, scale = max (INDbyEXP.D))), colour = 'grey30') +
+#   geom_line (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP, center = F, scale = max (INDbyEXP))), colour = 'black', linetype = 1) +
+#   #geom_line (data = DETECTIONS.WEEK, aes (x = DATE.WEEKS ,y = scale (INDbyEXP.D, center = F, scale = max (INDbyEXP.D))), colour = 'grey30') +
+# #  geom_line(aes(y = scale (N.INDIVIDUALS, center = F, scale = max (N.INDIVIDUALS))*max (N.INDIVIDUALS))) +
+#   geom_line (data = ENCOUNTERS.WEEK, aes(x = DATE.WEEK, y = scale (LTSUE, center = F, scale = max (LTSUE))), colour = 'grey50', linetype = 1) + 
+#   geom_point (data = ENCOUNTERS.WEEK, aes (x = DATE.WEEK, y = scale (TSUE, center = F, scale = max (LTSUE))), colour = 'grey50') +
+#   theme_classic() + ylab ("Scaled number of individuals") + xlab ("Time") +  theme(text = element_text(size = 10))
+# dev.off()
 
-ggplot(DETECTIONS.WEEK, aes (x = DATE.WEEKS)) + 
-  geom_line(aes(y = N.INDIVIDUALS))
-
-ggplot(DET.WS, aes (x = DATETIME)) + geom_histogram() + facet_wrap (~ ECOCEAN)
