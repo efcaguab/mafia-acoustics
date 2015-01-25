@@ -1,0 +1,1383 @@
+---
+title: "Mafia Acoustics Paper - Data Analysis"
+author: "Fernando Cagua"
+date: "9 September 2014"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r libraries and setup, include=FALSE, cache=FALSE}
+# Turn on cache globally for faster report rendering
+knitr::opts_chunk$set(cache=TRUE)
+
+library (VTrack)  ## For organizing acoustic data (quite useless)
+library (lubridate)  # Functions for handling date-time objects
+library (mgcv) # Functions for GAMM
+library (maptools)  # Functions for 
+library (ggplot2)
+library (doMC)
+library (plyr)
+library (dplyr)
+library (reshape2)
+library (gtools)
+library (plot3D)
+library (gamm4)
+library (xtable)
+library (knitr)
+registerDoMC (cores = 30)
+
+```
+
+
+```{r functions, echo=FALSE}
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  require(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+# Preprocessing
+
+## Acoustic data
+We first import the all files that contain the data we want to work with. That includes the csv containing the raw detections as exported by VUE, the receiver events file (from VUE), the array events file and the list of whale sharks tagged. And the list with sharks known to have lost their tag.  
+
+```{r read}
+# Read CSV detection file and process it with VTrack
+MAFIA.DETECTIONS <- ReadInputData (
+  read.csv ("../Raw Data/AllMafiaDetections20140715.csv"),
+  iHoursToAdd = 3)
+MAFIA.DETECTIONS$DATETIME <- as.POSIXct (
+  as.POSIXlt (MAFIA.DETECTIONS$DATETIME, tz="Africa/Dar_es_Salaam"))
+
+RECEIVER.EVENTS <- read.csv ("../Raw Data/AllMafiaEvents20140715.csv")
+ARRAY.EVENTS <- read.csv ("../Raw Data/ArrayEvents_20140808.csv")
+WS.TAGS <- read.csv ("../Raw Data/WSTags_20140909.csv")
+
+TAG.LOST <- data.frame (id = c ("X","TZ-030", "TZ-068", "TZ-040", "TZ-032", "TZ-064"), 
+                        date = as.Date (c ("2012-10-26","2013-07-25", "2013-11-15", "2014-12-11", "2014-01-09", "2013-11-11")))
+
+```
+
+### Correct time drift
+
+We also correct for time drift using the events exported from VUE. It is necessary to check manually that all entries are correct, i.e. to check that all the time zones were correctly set up. We found four inconsistencies. 
+
+```{r time drift}
+# Read CSV events file 
+
+names (RECEIVER.EVENTS) <- c ("DATETIME", "RECEIVERID", "DESC", "DATA", "UNITS")
+RECEIVER.EVENTS$DATETIME <- as.POSIXct (RECEIVER.EVENTS$DATETIME, tz ="UTC")
+RECEIVER.EVENTS$DATETIME <- as.POSIXct (
+  as.POSIXlt (RECEIVER.EVENTS$DATETIME, tz="Africa/Dar_es_Salaam"))
+PC.TIMES <- RECEIVER.EVENTS [RECEIVER.EVENTS$DESC == "PC Time", c (1, 2, 4)]
+# We manually checked that all PC times are in the time-zone GMT+3 so we can go ahead and convert the PC times to POSIXct class
+PC.TIMES$DATA <- as.POSIXct (
+  substr (as.character (PC.TIMES$DATA), 1, 19), tz="Africa/Dar_es_Salaam")
+
+# # Plots to check for time zone and computer time mistakes
+# ggplot(PC.TIMES) + geom_line (aes (x = DATA, y = as.vector (DATA - DATETIME)/60)) + facet_grid (. ~ RECEIVERID , scale = "fixed")
+# U <- PC.TIMES[PC.TIMES$RECEIVERID == "VR2W-104845", ]
+# V <- data.frame (DATETIME = seq (min(U$DATETIME), max(U$DATETIME), "week"), DIFF = approx (as.numeric(U$DATA), as.vector (U$DATA - U$DATETIME), seq (min(U$DATETIME), max(U$DATETIME), "week")))
+# ggplot
+
+# Error for Data Upload on 2013-01-27 09:21:07 (receiver time) for VR2W-104847
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 09:21:07")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 09:21:07")] + 3600*3
+# Error for Data Upload on 2013-01-22 11:37:46 (receiver time) for VR2W-104848
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-22 11:37:46")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-22 11:37:46")] + 3600*3
+# Error for Data Upload on 2013-01-27 08:12:34 (receiver time) for VR2W-109044
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 08:12:34")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 08:12:34")] + 3600*3
+# Error for Data Upload on 2013-01-27 07:42:54 (receiver time) for VR2W-113484
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 07:42:54")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 07:42:54")]  + 3600*3
+
+# Correct time drift 
+receiverIDs <- levels (MAFIA.DETECTIONS$RECEIVERID)
+#pb <- txtProgressBar(max=length (receiverIDs), style = 3)
+for (i in 1:length (receiverIDs)){
+  #setTxtProgressBar (pb, i)
+  receiver.PC.TIMES <- PC.TIMES[PC.TIMES$RECEIVERID == receiverIDs[i], ]
+  drift <- approx (receiver.PC.TIMES$DATA, receiver.PC.TIMES$DATA - receiver.PC.TIMES$DATETIME, MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME)$y
+  MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME + drift
+}
+#close (pb)
+```
+
+### Assign detections to stations
+
+In order to assign detections to stations we import a table containing a list of the times when a receiver was deployed or retrieved and where. Each detection is then assigned to a particular station (location) as opposed to a specific receiver. This procedure automatically takes out detections that occurred when receivers were outside of the water.
+
+```{r det to stat}
+# Read and organize events (retrievals/deployments) data
+ARRAY.EVENTS <- ARRAY.EVENTS[(ARRAY.EVENTS$EVENT == "DEP") | (ARRAY.EVENTS$EVENT == "RET"), ]
+R.EVE <- data.frame(DATETIME = as.POSIXct (ARRAY.EVENTS$DATE, tz="Africa/Dar_es_Salaam")) 
+R.EVE$STATIONNAME <- factor(ARRAY.EVENTS$STATION)
+R.EVE$EVENT <- ARRAY.EVENTS$EVENT
+R.EVE$RECEIVERID <- ARRAY.EVENTS$REC
+ARRAY.EVENTS <- R.EVE
+
+# Read stations file and assign detections to stations
+STATIONS <- read.csv ("../Raw Data/Stations_20130205.csv")
+# Assign station and location
+#pb <- txtProgressBar(max=length (ARRAY.EVENTS [,1]), style = 3)
+for (i in 1:length (ARRAY.EVENTS [,1])){  # For each event
+  # If is a deployment change the station for the future
+  if (ARRAY.EVENTS$EVENT[i] == "DEP"){  
+    # message ("    Analyzing deployment of ", ARRAY.EVENTS$RECEIVERID[i], " on ", 
+    #         floor_date (ARRAY.EVENTS$DATETIME[i], "day"), " at   Station ", ARRAY.EVENTS$STATIONNAME[i])
+    replace.index <- (as.character (ARRAY.EVENTS$RECEIVERID[i]) == as.character(MAFIA.DETECTIONS$RECEIVERID)) & (MAFIA.DETECTIONS$DATETIME >= ARRAY.EVENTS$DATETIME[i]) 
+    # Include station
+    MAFIA.DETECTIONS$STATIONNAME [replace.index] <- as.character (ARRAY.EVENTS$STATIONNAME[i])
+  }
+  # If is a retrieval delete data for the future
+  else {  
+    # message ("    Analyzing retrieval  of ", ARRAY.EVENTS$RECEIVERID[i], " on ", 
+    #        floor_date (ARRAY.EVENTS$DATETIME[i], "day"), " from Station ", ARRAY.EVENTS$STA[i])
+    replace.index <- (as.character (ARRAY.EVENTS$RECEIVERID[i]) == as.character(MAFIA.DETECTIONS$RECEIVERID)) & 
+      (MAFIA.DETECTIONS$DATETIME >= ARRAY.EVENTS$DATETIME[i]) 
+    MAFIA.DETECTIONS$STATIONNAME[replace.index] <- NA
+  }
+  #setTxtProgressBar (pb, i)
+}
+#close (pb)
+# Delete detections outside valid intervals
+MAFIA.DETECTIONS <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$STATIONNAME != 'Unknown' & !is.na (MAFIA.DETECTIONS$STATIONNAME), ]
+
+save (MAFIA.DETECTIONS, ARRAY.EVENTS, file ="../Processed Data/AllDetections.RData")
+rm (R.EVE, i, replace.index)
+```
+
+### Filter detections
+
+Here we filter out only whale shark tags (discarding range test, foreign and collisions). I use the list of tagged sharks for that. Simultaneously, to prevent the analysis of potentially un-natural behavior the first 48 hours of detections are removed. It also assigns a unique whale shark ID to each transmitter ID.
+
+```{r select whale shark detections}
+# Read file with Whale Shark Tag lists
+WS.TAGS$DATE <- as.POSIXct (WS.TAGS$DATE, format="%d/%m/%Y", tz = "Africa/Dar_es_Salaam")
+WS.TAGS$NAME <- WS.TAGS$COMMENT <- WS.TAGS$SHARK <- NULL
+
+# Select only whale shark detections 
+DET.WS <- MAFIA.DETECTIONS[!is.na (match (MAFIA.DETECTIONS$TRANSMITTERID, WS.TAGS$TRANSMITTERID)), ]
+
+# Remove detections before 48 hours after tagging date
+for (i in 1: nrow(WS.TAGS)){
+  next2.days <- WS.TAGS$DATE + 60 * 60 * 24 * 2  # Add two days
+  replace.index <- as.character (DET.WS$TRANSMITTERID) == as.character (WS.TAGS$TRANSMITTERID[i])
+  # Delete rows that are in the tagging day
+  DET.WS <- subset (DET.WS, ! (replace.index & (DET.WS$DATETIME < next2.days[i]))) 
+}
+
+# Remove unused tags from the factor list
+DET.WS$TRANSMITTERID <- factor (DET.WS$TRANSMITTERID)
+rm (i, next2.days, replace.index)
+```
+
+### Foreign tags
+
+Remove range test tags and whale shark tags. There was an "abbandoned" tag in fron of K11 for a long time. We'll remove it. Also Because some of them might be colissions, we'll discard any with less than two detections
+
+```{r}
+range.test.tags <- read.csv ("../Raw Data/RTTags_20130305.csv")
+DET.RT <- filter (MAFIA.DETECTIONS, TRANSMITTERID %in% range.test.tags$Transmitter)
+
+ddet.ws <- filter (MAFIA.DETECTIONS, TRANSMITTERID %in% WS.TAGS$TRANSMITTERID)
+foreign.detections <- anti_join (MAFIA.DETECTIONS, ddet.ws) %>%
+  anti_join (DET.RT) %>% 
+  filter (TRANSMITTERID != "A69-1303-53872") %>%
+  select (-(STATIONNAME)) %>%
+  ddply ("TRANSMITTERID", function (x){
+  if (nrow (x) > 1) {
+    return (x)
+  } else {
+    return (NULL)
+    }
+})
+foreign.detections$TRANSMITTERID <- factor (foreign.detections$TRANSMITTERID)
+```
+
+# Residency models
+
+The follwing function calculates both a time and a lag dependent response variable for the precense of whale sharks. 
+
+```{r function, cache=FALSE}
+
+# Function to calculate the vectors of presence absence
+pres.abs.lag <- function (start.date, end.date, sightings, dates){
+  # Create a data frame with the detections
+  sight <- data.frame (id = sightings, date = dates) %>%
+    filter (date >= start.date, date <= end.date) %>%
+    mutate (id = factor (id)) %>% 
+    arrange (date)
+  
+  # For each shark we'll start with the first detection only
+  individuals <- levels (sight$id)
+  # Cycle trough each shark
+  presence.absence <- foreach (i=1:length (individuals),
+                               .combine = rbind) %dopar% {
+    # Find dates in which the shark was present
+    dates.present <- sight$date[sight$id == individuals[i]] %>%
+      as.numeric ()
+    # Establish all dates in which it was tagged (only dates in which there was monitoring)
+    dates.tagged <- unique(sight$date)[unique(sight$date) > 
+                                         sight$date[match (individuals[i], sight$id)]]
+    # Find all possible combinations of dates in which it was tagged
+    dates.comb <- as.data.frame (t (combn (dates.tagged, 2))) %>%
+      tbl_df()
+    names (dates.comb) <- c ("date.1", "date.2")
+    dates.comb <- mutate (dates.comb, lag = date.2 - date.1, # Find the lag between given dates
+                          # Establish if it was present for in that lag
+                          present = (date.1 %in% dates.present) &
+                            (date.2 %in% dates.present), 
+                          date = as.Date(date.1, origin = "1970-01-01"), 
+                          id = individuals[i]) %>%
+      select (-date.1, -date.2)
+    return (dates.comb)
+  } %>%
+    mutate (day = yday (date), week = week (date), month = month(date))
+  return (presence.absence)
+}
+
+```
+
+The model was previously run in a daily basis, however the size of the resulting data frame was too large to be computationally manegable at the scales we are able to work. It will now be redone using weekly bins.
+
+Note that Emmental TZ-003 was tagged twice, but lost it's first tag leaving no detections
+
+```{r}
+det.ws <- tbl_df (DET.WS)  # Convert to tbl data frame
+ws.tags <- tbl_df (WS.TAGS)
+names (det.ws) <- names (det.ws) %>% tolower ()  # change names to lower case 
+names (ws.tags) <- names (ws.tags) %>% tolower ()
+names (ws.tags)[2] <- "date.tag"
+
+# Using only sharks present in the list of tagged sharks merge data frames
+det.ws <- inner_join (det.ws, select (ws.tags, -(size), -(number)))
+
+# Clump in a weekly basis
+det.ws <- mutate (det.ws, date.week = cut (datetime, 'week') %>% as.Date ())
+aco.week <- ddply (det.ws, "date.week", function (det){
+  sharks <- !duplicated (det$ecocean)
+  per.week <- data.frame (ecocean = det$ecocean[sharks], 
+                          sex = det$sex[sharks],
+                          batch = det$sex[sharks], 
+                          date.tag = det$date.tag[sharks])
+})
+```
+
+Now we calculate the response variable:
+
+```{r}
+PADet.comb <- pres.abs.lag (start.date = min (aco.week$date.week), 
+                            end.date = max (aco.week$date.week),
+                            sightings = aco.week$ecocean, 
+                            dates = aco.week$date.week)
+names (PADet.comb)[4] <- "ecocean"
+```
+
+We want to include in the model sex, size and the number of stations to control for effort.
+
+```{r, cache=FALSE}
+calc.nStations <- function (ARRAY.EVENTS, PADet){
+  # Calculate number of receivers working
+  ARRAY.EVENTS <- arrange (ARRAY.EVENTS, DATETIME)
+  times.in <- ddply (ARRAY.EVENTS, "STATIONNAME", function (x){
+    deployed <- filter (x, EVENT == "DEP", lead (EVENT) == "RET")
+    retrieved <- filter (x, EVENT == "RET", lag (EVENT) == "DEP")
+    if (nrow (deployed) > 0) {
+      y <- data.frame (station = first (x$STATIONNAME), 
+                       date.in = deployed$DATETIME, 
+                       date.out = retrieved$DATETIME,
+                       rec.in = deployed$RECEIVERID,
+                       rec.out = retrieved$RECEIVERID)
+      return (y)
+    } else return (NULL)
+  })
+  # Calculate array configuration and number of receivers working
+  PADet <- ddply (PADet, "date", function (x, times.in){
+    stations.listening <- filter (times.in, x$date[1] >= as.Date (date.in), x$date[1] <= as.Date (date.out)) %>% 
+      select (station) %>%
+      unique()
+    x$configuration <- do.call (paste, as.list(stations.listening$station))
+    x$nStations <- nrow (stations.listening)
+    return (x)
+  }, times.in = times.in)
+}
+  
+```
+
+
+```{r}
+# Merge with tagged shark information
+PADet.comb <- left_join (PADet.comb, select(ws.tags, ecocean, sex, size, batch))
+
+# Generate a times in out data frame for each receiver
+  ARRAY.EVENTS <- arrange (ARRAY.EVENTS, DATETIME)
+  times.in <- ddply (ARRAY.EVENTS, "STATIONNAME", function (x){
+    deployed <- filter (x, EVENT == "DEP", lead (EVENT) == "RET")
+    retrieved <- filter (x, EVENT == "RET", lag (EVENT) == "DEP")
+    if (nrow (deployed) > 0) {
+      y <- data.frame (station = first (x$STATIONNAME), 
+                       date.in = deployed$DATETIME, 
+                       date.out = retrieved$DATETIME,
+                       rec.in = deployed$RECEIVERID,
+                       rec.out = retrieved$RECEIVERID)
+      return (y)
+    } else return (NULL)
+  })
+
+pres <- ddply (PADet.comb, "date", function (x, times.in){
+  # Generate weekly approximations
+  times.in <- mutate (times.in, w.date.in = cut (date.in, 'week'),
+                      w.date.out = cut (date.out, 'week'))
+    stations.listening <- filter (times.in, x$date[1] >= as.Date (w.date.in), x$date[1] <= as.Date (w.date.out)) %>% 
+      select (station) %>%
+      unique()
+  y <- data.frame (configuration = do.call (paste, as.list(stations.listening$station)), 
+                   nStations = nrow (stations.listening))
+    return (y)
+  }, times.in = times.in)
+
+PADet.comb <- inner_join (PADet.comb, pres)
+```
+
+Now we remove the data of sharks that were known to lost their tags
+
+```{r}
+# Delete data for sharks that were known to loose their tag
+PADet.comb <- ddply (PADet.comb, "ecocean", function (x, TAG.LOST){
+  for (i in 1:length (levels (TAG.LOST$id))){
+    if (as.character (TAG.LOST$id[i]) == as.character (first (x$ecocean))){
+      out <- filter (x, date < TAG.LOST$date[i])
+      } else {out <- x}
+    }
+  return (out)
+  }, TAG.LOST = TAG.LOST) %>% tbl_df()
+
+PADet.comb <- mutate (PADet.comb, lagl = log (lag + 1), 
+                      date.id = paste (date, ecocean))
+```
+
+Now we try the models
+
+```{r, eval= FALSE}
+mdA <- vector ("list", 0)
+
+mdA[[1]] <- expression(md01 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4))
+
+eval(mdA[[1]])
+# 
+# # Save the residuals
+# rd01 <- residuals (md01$gam, type = "pearson")
+# # Plot residuals against variables
+# ggplot (PADet.comb) + geom_boxplot (aes (y = rd01, x = ecocean))
+# # Evidence of heteogeneous variance per shark
+# ggplot (PADet.comb) + geom_boxplot (aes (y = rd01, x = batch))
+# # Evidence of heterogeneous variance per batch
+# ggplot (PADet.comb) + geom_boxplot (aes (y = rd01, x = as.factor(date))) + coord_flip()
+# # Evidence of heterogeneous variance per start date
+# ggplot (PADet.comb) + geom_boxplot (aes (y = rd01, x = as.factor(date))) + coord_flip()
+# PARes <- PADet.comb ; PARes$res <- md01
+```
+
+Secondly we try a model with different smoothers per cohort
+
+```{r}
+# Create dummy variables per cohort
+PADet.comb <- mutate (PADet.comb, B1 = 0, B2 = 0, B3= 0)
+PADet.comb$B1[PADet.comb$batch == "2012-1"] <- 1
+PADet.comb$B2[PADet.comb$batch == "2012-2"] <- 1
+PADet.comb$B3[PADet.comb$batch == "2014-1"] <- 1
+
+```
+
+```{r, eval = FALSE}
+# Only yearly pattern (ITS SINGULAR)
+# mdA[[2]] <- expression (md02 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (week, bs ="cc", by = B1) + s (week, bs ="cc", by = B2) + s (week, bs ="cc", by = B3) + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4))
+
+# # Only lag (IT'S SINGULAR)
+# mdA[[3]] <- expression (md03 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + s (lag, bs = "cr", by = B1) + s (lag, bs = "cr", by = B2) + s (lag, bs = "cr", by = B3) + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4)) 
+# # Both (IT'S SINGULAR AS WELL)
+# mdA[[4]] <- expression (md04 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (week, bs ="cc", by = B1) + s (week, bs ="cc", by = B2) + s (week, bs ="cc", by = B3) + s (lag, bs = "cr") + s (lag, bs = "cr", by = B1) + s (lag, bs = "cr", by = B2) + s (lag, bs = "cr", by = B3) + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4)) 
+
+# foreach (i=4:4) %dopar% eval (mdA[[i]])
+
+```
+
+Add random components
+
+```{r}
+
+PADet.comb <- mutate (PADet.comb, date.random = (as.numeric (date) - as.numeric (min (date))) / 7) 
+PADet.comb$date.random <- as.factor (PADet.comb$date.random)
+PADet.comb$date.id <- as.factor (PADet.comb$date.id)
+```
+
+```{r, eval = FALSE}
+# Only shark 
+mdA[[2]] <- expression(md02 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(ecocean=~1)))
+# Only date into shark
+mdA[[3]] <- expression(md03 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1)))
+# Shark and date combine
+mdA[[4]] <- expression(md04 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(date.id=~1)))
+
+for (i in 2:4) eval (mdA[[i]])
+```
+
+The matrix is neggative for the combination of sharks and date. We will discard that model. Now we will explore the autocorrelation component for the two models with random components that behaved well. We'll try both only autocorrelation and mooving average 
+
+```{r, eval = FALSE}
+PADet.comb <- mutate (PADet.comb, lag.corr <- lag / 7)
+# AR1 - Only shark 
+mdA[[5]] <- expression(md05 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(ecocean=~1), correlation =  corAR1 (form = ~ lag.corr | date.random)))
+# AR1 - Only date into shark
+mdA[[6]] <- expression(md06 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corAR1 (form = ~ lag.corr | date.random)))
+# ARMA11 - Only shark 
+mdA[[7]] <- expression(md07 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(ecocean=~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1)))
+# ARMA11 - Only date into shark
+mdA[[8]] <- expression(md08 <- gamm (formula = formula (present ~ s (week, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1)))
+
+for (i in 6:8) eval (mdA[[i]])
+
+```
+
+I noticed there might be a problem with the date, I'll try now modifying the function to include both dates
+
+```{r}
+
+# Function to calculate the vectors of presence absence
+pres.abs.lag.2 <- function (start.date, end.date, sightings, dates){
+  # Create a data frame with the detections
+  sight <- data.frame (id = sightings, date = dates) %>%
+    filter (date >= start.date, date <= end.date) %>%
+    mutate (id = factor (id)) %>% 
+    arrange (date)
+  
+  # For each shark we'll start with the first detection only
+  individuals <- levels (sight$id)
+  # Cycle trough each shark
+  presence.absence <- foreach (i=1:length (individuals),
+                               .combine = rbind) %dopar% {
+    # Find dates in which the shark was present
+    dates.present <- sight$date[sight$id == individuals[i]] %>%
+      as.numeric ()
+    # Establish all dates in which it was tagged (only dates in which there was monitoring)
+    dates.tagged <- unique(sight$date)[unique(sight$date) > 
+                                         sight$date[match (individuals[i], sight$id)]]
+    # Find all possible combinations of dates in which it was tagged
+    dates.comb <- as.data.frame (t (combn (dates.tagged, 2))) %>%
+      tbl_df()
+    names (dates.comb) <- c ("date.1", "date.2")
+    dates.comb <- mutate (dates.comb, lag = date.2 - date.1, # Find the lag between given dates
+                          # Establish if it was present for in that lag
+                          present = (date.1 %in% dates.present) &
+                            (date.2 %in% dates.present), 
+                          date.1 = as.Date(date.1, origin = "1970-01-01"), 
+                          date.2 = as.Date(date.2, origin = "1970-01-01"), 
+                          id = individuals[i])
+    return (dates.comb)
+  }
+  return (presence.absence)
+}
+```
+
+Now we calculate the response variable:
+
+```{r}
+PADet.comb.2 <- pres.abs.lag.2 (start.date = min (aco.week$date.week), 
+                            end.date = max (aco.week$date.week),
+                            sightings = aco.week$ecocean, 
+                            dates = aco.week$date.week)
+names (PADet.comb.2)[5] <- "ecocean"
+PADet.comb.2 <- mutate (PADet.comb.2, week.1 = week (date.1), week.2 = week (date.2), week.av =( week.2 + week.1)/2)
+PADet.comb.2 <- left_join (PADet.comb.2, select (ws.tags, ecocean, sex, size, batch))
+```
+
+```{r, eval = FALSE}                    
+
+ma1 <- gamm (present ~ s (week.1, bs = "cc") + s (week.2, bs = "cc") + s (lag, bs = "cr"), family = "binomial", data = PADet.comb.2)
+
+ma2 <- gamm (present ~  s (week.2, bs = "cc") + s (lag, bs = "cr"), family = "binomial", data = PADet.comb.2[sample (nrow(PADet.comb.2), 5000), ])
+
+ma3 <- gamm (present ~  s (week.av, bs = "cc") + s (lag, bs = "cr"), family = "binomial", data = PADet.comb.2[sample (nrow(PADet.comb.2), 5000), ])
+
+date.start <- as.Date (c ("2012-10-10", "2012-12-24", "2014-01-01"))
+date.end <- as.Date ("2014-05-01")
+pred.df <- foreach (i=1:3, .combine = rbind) %do%{
+  pred.df <- expand.grid (date.1 = seq (date.start[i], date.end, by ="week")) %>%
+  mutate (date.2 = date.start[1], lag = as.numeric (date.1) - as.numeric (date.start[i]), week.1 = week (date.1), week.2 = week (date.2), )
+pred.df$pred <-  predict (ma1$gam, pred.df, type = "response")
+pred.df$iii <- i
+return (pred.df)
+}
+
+ggplot (pred.df,aes (x = date.1, y = pred)) + geom_line(aes (colour = as.factor (iii)))
+```
+
+It all looks like bullshit. We'll probably work separatelly on the year basis and the lag basis.
+
+## Year model
+
+We start by generating a function that caclulates precense absense in for the yearly model. It's quite similar to the lag model but doesn't include combinations. 
+
+```{r}
+
+pres.abs.year <- function (start.date, end.date, sightings, dates){
+  # Create a data frame with the detections
+  sight <- data.frame (id = sightings, date = dates) %>%
+    filter (date >= start.date, date <= end.date) %>%
+    mutate (id = factor (id)) %>% 
+    arrange (date)
+  
+  # For each shark we'll start with the first detection only
+  individuals <- levels (sight$id)
+  # Cycle trough each shark
+  presence.absence <- foreach (i=1:length (individuals),
+                               .combine = rbind) %dopar% {
+    # Find dates in which the shark was present
+    dates.present <- sight$date[sight$id == individuals[i]] %>%
+      as.numeric ()
+    # Establish all dates in which it was tagged (only dates in which there was monitoring)
+    dates.tagged <- unique(sight$date)[unique(sight$date) > 
+                                         sight$date[match (individuals[i], sight$id)]]
+    sight.shark <- data.frame (date = dates.tagged, 
+                               present = dates.tagged %in% dates.present, 
+                               id = individuals[i]) %>%
+      tbl_df ()
+    return (sight.shark)
+  }
+  return (presence.absence)
+}
+```
+
+### Acoustic based
+
+Calculate response variable. For a quick view we plot the patterns across the years and combined in a single year.
+
+```{r}
+pre.abs.year.aco <-  pres.abs.year (start.date = min (aco.week$date.week), 
+                            end.date = max (aco.week$date.week),
+                            sightings = aco.week$ecocean, 
+                            dates = aco.week$date.week)
+
+ggplot(pre.abs.year.aco, aes (x = week (date), y = as.numeric (present))) + geom_point() + geom_smooth() 
+
+ggplot(pre.abs.year.aco, aes (x = date, y = as.numeric (present))) + geom_point() + geom_smooth() 
+```
+
+We next have to delete the observations from sharks known to have lost their tags.
+
+```{r}
+pre.abs.year.aco <- ddply (pre.abs.year.aco, "id", function (x, TAG.LOST){
+  for (i in 1:length (levels (TAG.LOST$id))){
+    if (as.character (TAG.LOST$id[i]) == as.character (first (x$id))){
+      x <- filter (x, date < TAG.LOST$date[i])
+      } 
+    }
+  return (x)
+  }, TAG.LOST = TAG.LOST) %>% tbl_df()
+```
+
+Next we should merge the precense absence data with the shark specific data
+
+```{r}
+names (pre.abs.year.aco)[3] <- "ecocean"
+pre.abs.year.aco <- left_join (pre.abs.year.aco, select (ws.tags, ecocean, sex, size, batch))
+```
+
+It turns out it looks quite similar to the date.2 field in the previous model...
+
+```{r}
+p1 <- ggplot(PADet.comb.2, aes (x = date.2, y = as.numeric (present), colour = batch)) + geom_point() + geom_smooth() 
+
+p2 <- ggplot(pre.abs.year.aco, aes (x = date, y = as.numeric (present), colour = batch)) + geom_point() + geom_smooth() 
+
+multiplot (p1, p2)
+
+
+p1 <- ggplot(PADet.comb.2, aes (x = week (date.2), y = as.numeric (present), colour = batch)) + geom_point() + geom_smooth() 
+
+p2 <- ggplot(pre.abs.year.aco, aes (x = week (date), y = as.numeric (present), colour = batch)) + geom_point() + geom_smooth() 
+
+multiplot (p1, p2)
+```
+
+It's worth to revisit the combinatory data. 
+
+
+## Combined model
+
+### Acoustic data
+
+As opposed as before, we'll calculate effort for date.2 and use date.1 only as a random effect. First we'll delete observations of sharks known to have lost their tags.
+
+```{r}
+PADet.comb.2 <- ddply (PADet.comb.2, "ecocean", function (x, TAG.LOST){
+  for (i in 1:length (levels (TAG.LOST$id))){
+    if (as.character (TAG.LOST$id[i]) == as.character (first (x$ecocean))){
+      x <- filter (x, date.2 < TAG.LOST$date[i], date.1 < TAG.LOST$date[i])
+      } 
+    }
+  return (x)
+  }, TAG.LOST = TAG.LOST) %>% tbl_df()
+```
+
+
+```{r}
+pres <- ddply (PADet.comb.2, "date.2", function (x, times.in){
+  # Generate weekly approximations
+  times.in <- mutate (times.in, w.date.in = cut (date.in, 'week'),
+                      w.date.out = cut (date.out, 'week'))
+    stations.listening <- filter (times.in, x$date.2[1] >= as.Date (w.date.in), x$date.2[1] <= as.Date (w.date.out)) %>% 
+      select (station) %>%
+      unique()
+  y <- data.frame (configuration = do.call (paste, as.list(stations.listening$station)), 
+                   nStations = nrow (stations.listening))
+    return (y)
+  }, times.in = times.in)
+
+PADet.comb.2 <- inner_join (PADet.comb.2, pres)
+```
+
+Generate models
+
+```{r, eval=FALSE}
+# Base simple model
+mb1 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size, family = "binomial", data = PADet.comb.2)
+```
+
+Analyze the residuals
+```{r, eval=FALSE}
+# Save the residuals
+rb01 <- residuals (mb1$gam, type = "pearson")
+# Plot residuals against variables
+ggplot (PADet.comb.2) + geom_boxplot (aes (y = rb01, x = ecocean))
+# Evidence of heteogeneous variance per shark
+ggplot (PADet.comb.2) + geom_boxplot (aes (y = rb01, x = batch))
+# Evidence of heterogeneous variance per batch
+ggplot (PADet.comb.2) + geom_boxplot (aes (y = rb01, x = as.factor(date.1))) + coord_flip()
+# Evidence of heterogeneous variance per start date
+PARes <- PADet.comb ; PARes$res <- md01
+```
+
+Add random components
+
+```{r}
+PADet.comb.2 <- mutate (PADet.comb.2, date.random = (as.numeric (date.1) - as.numeric (min (date.1))) / 7, date.id = paste (date.1, ecocean)) 
+PADet.comb.2$date.random <- as.factor (PADet.comb.2$date.random)
+PADet.comb.2$date.id <- as.factor (PADet.comb.2$date.id)
+```
+
+```{r, eval = FALSE}
+# Only shark 
+mb02 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1))
+# Only date into shark
+mb03 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1))
+# Shark and date combin
+mb04 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(date.id=~1))
+
+intervals (mb02$lme, which = "var-cov")
+intervals (mb03$lme, which = "var-cov")
+intervals (mb04$lme, which = "var-cov")
+```
+
+Both mb03 and mb04 have valid variance covariance matrices, the most logical is mb03. 
+
+```{r, eval=FALSE}
+PADet.comb.2<- mutate (PADet.comb.2, lag.corr <- lag / 7)
+```
+```{r, eval = FALSE}
+# AR1 - Only date into shark
+mb05 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corAR1 (form = ~ lag.corr | date.random))
+# ARMA11 - Only date into shark
+mb06 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))
+
+intervals (mb05$lme, which = "var-cov")
+intervals (mb06$lme, which = "var-cov")
+```
+
+The moving average component is also significant. We'll keep the model 6
+
+```{r, eval=FALSE}
+# Save the residuals
+rb01 <- residuals (mb06$gam, type = "pearson")
+# Plot residuals against variables
+ggplot (PADet.comb.2) + geom_boxplot (aes (y = rb01, x = ecocean))
+# Evidence of heteogeneous variance per shark
+ggplot (PADet.comb.2) + geom_boxplot (aes (y = rb01, x = batch))
+# Evidence of heterogeneous variance per batch
+ggplot (PADet.comb.2) + geom_boxplot (aes (y = rb01, x = as.factor(date.1))) + coord_flip()
+
+ggplot (PADet.comb.2, aes (x = lag, y = rb01)) + geom_point (alpha = 0.5) + geom_smooth ()
+
+ggplot (PADet.comb.2, aes (x = week.2, y = rb01)) + geom_point (alpha = 0.5) + geom_smooth ()
+
+ggplot (PADet.comb.2, aes (x = date.2, y = rb01)) + geom_point (alpha = 0.5) + geom_smooth ()
+
+# Evidence of heterogeneous variance per start date
+PARes <- PADet.comb ; PARes$res <- md01
+```
+
+We'll now reduce the complexity of the model by taking out covaraites that don't explain anything
+
+```{r, eval=FALSE}
+mb07 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex  + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))
+mb08 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + size + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))
+mb09 <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))
+```
+
+The final model is mb09, the full optimal model is mb06. Next time we run the models we will not evaluate them one by one, instead we will evaluate them all at the same time in pararell, the evaluation of previous blocks is 
+
+```{r, eval = FALSE}
+models.acoustic <- vector ("list", 0)
+models.acoustic[[1]] <- parse (text = "gamm (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex + size, family = 'binomial', data = PADet.comb.2)")
+models.acoustic[[2]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex + size + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1))")
+models.acoustic[[3]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex + size + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1, date.random = ~1))")
+models.acoustic[[4]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex + size + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(date.id=~1))")
+models.acoustic[[5]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex + size + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corAR1 (form = ~ lag.corr | date.random))")
+models.acoustic[[6]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex + size + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))")
+models.acoustic[[7]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + sex  + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))")
+models.acoustic[[8]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag, bs = 'cr') + size + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))")
+models.acoustic[[9]] <- parse (text = "gamm (formula = formula (present ~ s (week.2, bs = 'cc') + s (lag) + nStations), data = PADet.comb.2, family = 'binomial', gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))")
+
+eval.models.acoustic <- llply (models.acoustic, eval, .pararell = TRUE)
+```
+### Visual data
+
+We start by importing the data. We'll use the socprog version, but populate it with details from 
+
+```{r}
+# Read full data set 
+enc.details <- read.csv ("../Raw Data/Encounters_AllDetails_20140721.csv") %>% tbl_df () %>%
+  mutate (ecocean = Marked.Individual, sex = Sex, size = Length..m.) %>%
+  select (ecocean, sex, size)
+levels (enc.details$sex) <- c (NA, "F", "M")
+# Make a summary per shark
+shark.details <- ddply (enc.details, "ecocean", function (x){
+  y <- data.frame (size = mean (x$size, na.rm = TRUE),  # The mean size
+                   sex = x$sex[!is.na (x$sex)][1])  # The first non NA sex
+  y$sex <- as.character (y$sex)
+  y$sex[is.na(y$sex)] <- "UK"
+  return (y)
+}) %>% tbl_df () 
+# Read socprog edited data set, select only Mafia encounters, correct dates and IDs
+# enc.socprog <- read.csv ("../Raw Data/Ecounters_socprog_20140721.csv") %>% 
+# Updated socprog file
+enc.socprog <- read.csv ("../Raw Data/Encounters_socprog_20141016.csv") %>% 
+tbl_df () %>%
+  filter (LocationID == "4b") %>%
+  mutate (date = as.POSIXct (Date, format = "%m/%d/%y %H:%M", tz = "Africa/Dar_es_Salaam") %>% as.Date () + 1, 
+          ecocean = gsub('^(.{2})(.*)$', '\\1-\\2', ID)) %>% 
+  select (date, ecocean)
+
+# Read survey data
+SURVEYS <- read.csv ("../Raw Data/Surveys_20140721.csv")
+SURVEYS$START.TIME <- as.POSIXct (with (SURVEYS, paste (DATE, START.TIME)), format = "%d-%b-%y %H:%M",  tz = "Africa/Dar_es_Salaam")
+SURVEYS$END.TIME <- as.POSIXct (with (SURVEYS, paste (DATE, END.TIME)), format = "%d-%b-%y %H:%M",  tz = "Africa/Dar_es_Salaam") 
+SURVEYS$DATE <- as.Date (SURVEYS$DATE, format ='%d-%b-%y')
+SURVEYS$DURATION <- with (SURVEYS, END.TIME-START.TIME)
+SURVEYS$DURATION[is.na (SURVEYS$DURATION)] <- round (mean (SURVEYS$DURATION, na.rm = TRUE))
+
+enc.socprog <- rbind (enc.socprog, data.frame (date = SURVEYS$DATE, ecocean = "XXX" )) %>%
+  mutate (date.week = cut (date, 'week') %>% as.Date ())
+
+enc.week <- ddply (enc.socprog, "date.week", function (det){
+  sharks <- !duplicated (det$ecocean)
+  per.week <- data.frame (ecocean = det$ecocean[sharks])
+}) %>% tbl_df () %>%
+  left_join (shark.details)
+enc.week$sex[is.na(enc.week$sex)] <- "UK"
+```
+
+Now we calculate the precense absense response variable
+
+```{r}
+# For all encounters
+PAEnc.comb.all <- pres.abs.lag.2 (min (SURVEYS$DATE), max (SURVEYS$DATE), enc.week$ecocean, enc.week$date) %>%
+  filter (id != "XXX")
+
+# Only for tagged sharks
+enc.week.tagged <- filter (enc.week, ecocean %in% ws.tags$ecocean | ecocean == "XXX")
+PAEnc.comb.tag <- pres.abs.lag.2 (min (SURVEYS$DATE), max (SURVEYS$DATE), enc.week.tagged$ecocean, enc.week.tagged$date) %>%
+  filter (id != "XXX")
+
+```
+
+Explore the data
+
+```{r, eval = FALSE}
+ggplot(PAEnc.comb.all, aes (x = date.2, y = as.numeric (present))) + geom_point() + geom_smooth()
+
+ggplot(PAEnc.comb.tag, aes (x = date.2, y = as.numeric (present))) + geom_point() + geom_smooth()
+
+ggplot(PAEnc.comb.all, aes (x = week (date.2), y = as.numeric (present))) + geom_point() + geom_smooth()
+ggplot(PAEnc.comb.tag, aes (sx = week (date.2), y = as.numeric (present))) + geom_point() + geom_smooth()
+
+ggplot(PAEnc.comb.all, aes (x = lag, y = as.numeric (present))) + geom_point() + geom_smooth()
+
+ggplot(PAEnc.comb.tag, aes (x = lag, y = as.numeric (present))) + geom_point() + geom_smooth()
+```
+
+Looks like it's better to use the only tagged sharks info
+
+```{r}
+names(PAEnc.comb.tag)[5] <- "ecocean"
+PAEnc.comb.tag <- left_join (PAEnc.comb.tag, select (ws.tags, ecocean, size, sex)) %>%
+  mutate (sex = factor (sex))
+# Impute a size for sharks without a size
+PAEnc.comb.tag$size.imp <- mean (PAEnc.comb.tag$size, na.rm = TRUE)
+PAEnc.comb.tag$size.imp[!is.na (PAEnc.comb.tag$size)] <- PAEnc.comb.tag$size[!is.na (PAEnc.comb.tag$size)]
+```
+
+Add effort per week
+
+```{r}
+SURVEYS <- mutate (SURVEYS, date.week = cut (DATE, "week") %>% as.Date ())
+# Weekly summary of survey effort
+surveys.week <- tbl_df (SURVEYS) %>% 
+  mutate (duration = as.numeric (DURATION)) %>% 
+  select (-(DURATION)) %>%
+  group_by (date.week) %>%
+  summarise (observers = mean (SNORKELERS, na.rm = TRUE), 
+             hours = sum (as.numeric (duration)) / 60) %>%
+  mutate (date.2 = date.week) %>%
+  select (-(date.week))
+# Merge with the data frame and create 
+PAEnc.comb.tag <- inner_join (PAEnc.comb.tag, surveys.week) %>% 
+  mutate (week.1 = week (date.1), 
+          week.2 = week (date.2), 
+          date.random = (as.numeric (date.1) - as.numeric (min (date.1))) / 7, 
+          date.id = paste (date.1, ecocean))
+
+PAEnc.comb.tag$date.random <- as.factor (PAEnc.comb.tag$date.random)
+PAEnc.comb.tag$date.id <- as.factor (PAEnc.comb.tag$date.id)
+```
+
+Create models
+
+```{r, eval = FALSE}
+me01 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag)
+```
+
+```{r, eval = FALSE}
+# Only shark
+me02 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1))
+me02lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=~(1|ecocean))
+# Date into shark
+me03 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1, date.random = ~1), niterPQL = 10000)
+me03lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=~(1|ecocean/date.random))
+# Date and shark combined
+me04 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=list(date.id=~1), niterPQL = 10000)
+
+intervals (me02$lme, which = "var-cov")
+intervals (me03$lme, which = "var-cov")
+intervals (me04$lme, which = "var-cov")
+```
+
+There is probably not enough data to use date.1 as a random effect. Now we try the correlation
+
+```{r, eval = FALSE}
+PAEnc.comb.tag <- mutate (PAEnc.comb.tag, lag.corr = lag / 7)
+```
+
+```{r, eval = FALSE}
+# AR1 -  into shark
+
+me05 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1), correlation =  corAR1 (form = ~ lag.corr | date.random))
+# ARMA11 -into shark
+me06 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))
+
+intervals (me05$lme, which = "var-cov")
+intervals (me06$lme, which = "var-cov")
+```
+
+Not enough information to include an auto-correlation term. Now we reduce the model. And discard non-significant variables. We'll stick to the random structure of model 2
+
+```{r, eval = FALSE}
+me07 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex  + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1))
+me08 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + size  + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1))
+me09 <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1))
+```
+## Model results
+
+Now we just chose here each of the best models and explore it's implications. 
+
+```{r}
+model.acoustic <- gamm (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + nStations), data = PADet.comb.2, family = "binomial", gamma = 1.4, random=list(ecocean=~1, date.random = ~1), correlation =  corARMA (form = ~ lag.corr | date.random, p = 1, q = 1))
+
+model.visual <- gamm (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + hours, family = "binomial", data = PAEnc.comb.tag, random=list(ecocean=~1))
+```
+
+Now we make a simulation comparing both datasets 
+
+```{r}
+# All tagging dates
+first.date <- (tbl_df (ws.tags) %>% group_by (batch) %>% summarise (initial.dates = median (date.tag) %>% as.Date ()) %>% select (initial.dates))$initial.dates
+last.date <- as.Date ("2014-04-07")
+pred.date <- foreach (i=1:length(first.date), .combine = rbind) %do%{
+  expand.grid (date.1 = first.date[i], 
+                     date.2 = seq (first.date[i], last.date, by ="week"), 
+                     hours = max (PAEnc.comb.tag$hours), 
+                     nStations = max (PADet.comb.2$nStations)) %>%
+    mutate (week.2 = week (date.2), 
+            lag = as.numeric (date.2) - as.numeric (date.1)) %>%
+    tbl_df()
+}
+pred.date <- cbind (pred.date, predict (model.acoustic$gam, pred.date, type = "response", se.fit = TRUE))
+pred.date <- cbind (pred.date, predict (model.visual$gam, pred.date, type = "response", se.fit = TRUE)) %>% tbl_df()
+names (pred.date)[7:10] <- c("aco.fit", "aco.se", "vis.fit", "vis.se")
+
+# Melt data prediction data frame
+pred.date <- rbind (pred.date, pred.date) %>% tbl_df () %>%
+  mutate (fit = c (pred.date$aco.fit, pred.date$vis.fit), 
+          se = c (pred.date$aco.se, pred.date$vis.se), 
+          data = rep (c ("acoustic", "visual"), each = nrow (pred.date)))
+
+# Plot probabilities
+ggplot(pred.date, aes (x = date.2)) + 
+  geom_line (aes (y = fit, colour = data, linetype = as.factor (date.1)))  + 
+  geom_line (aes (y = fit, colour = data, linetype = as.factor (date.1)))  + 
+  theme_minimal () + 
+  #geom_ribbon (aes (ymin = fit - se, ymax = fit + se, fill = data, linetype = as.factor (date.1)), alpha = 0.3) + geom_ribbon (aes (ymin = fit - se, ymax = fit + se, fill = data, linetype = as.factor (date.1)), alpha = 0.3) + 
+  scale_colour_grey () + scale_fill_grey ()
+```
+
+
+```{r}
+# Median tagging date
+first.date <- median (ws.tags$date.tag) %>% as.Date () -1
+last.date <- as.Date ("2014-04-07")
+pred.date <- foreach (i=1:length(first.date), .combine = rbind) %do%{
+  expand.grid (date.1 = first.date[i], 
+                     date.2 = seq (first.date[i], last.date, by ="week"), 
+                     hours = median (PAEnc.comb.tag$hours), 
+                     nStations = median (PADet.comb.2$nStations)) %>%
+    mutate (week.2 = week (date.2), 
+            lag = as.numeric (date.2) - as.numeric (date.1)) %>%
+    tbl_df()
+}
+pred.date <- cbind (pred.date, predict (model.acoustic$gam, pred.date, type = "response", se.fit = TRUE))
+pred.date <- cbind (pred.date, predict (model.visual$gam, pred.date, type = "response", se.fit = TRUE)) %>% tbl_df()
+names (pred.date)[7:10] <- c("aco.fit", "aco.se", "vis.fit", "vis.se")
+
+# Melt data prediction data frame
+pred.date <- rbind (pred.date, pred.date) %>% tbl_df () %>%
+  mutate (fit = c (pred.date$aco.fit, pred.date$vis.fit), 
+          se = c (pred.date$aco.se, pred.date$vis.se), 
+          data = rep (c ("acoustic", "visual"), each = nrow (pred.date)))
+
+
+# Plot probabilities for just one initial date
+ggplot(pred.date, aes (x = date.2)) + 
+  geom_line (aes (y = fit, colour = data))  + 
+  theme_classic () + 
+  geom_ribbon (aes (ymin = fit - se, ymax = fit + se, fill = data), alpha = 0.15) +
+  scale_fill_manual (values = c("#006F51", "#000000")) +
+  scale_colour_manual (values = c("#006F51", "#000000")) +
+  xlab ("Date") + ylab ("Capture probability") + theme (text = element_text (family = "serif"), legend.position = "top")
+
+```
+
+Now we make a comparison of for year and lag
+
+```{r}
+pred.yl <- expand.grid (week.2 = 1:53, 
+                        lag = seq (1, 567, by = 7), 
+                        hours = median (PAEnc.comb.tag$hours), 
+                        nStations = median (PADet.comb.2$nStations))
+pred.yl <- cbind (pred.yl, predict (model.acoustic$gam, pred.yl, type = "response", se.fit = TRUE))
+pred.yl <- cbind (pred.yl, predict (model.visual$gam, pred.yl, type = "response", se.fit = TRUE)) %>% tbl_df()
+names (pred.yl)[5:8] <- c("aco.fit", "aco.se", "vis.fit", "vis.se")
+
+# Melt data prediction data frame
+pred.yl <- rbind (pred.yl, pred.yl) %>% tbl_df () %>%
+  mutate (fit = c (pred.yl$aco.fit, pred.yl$vis.fit), 
+          se = c (pred.yl$aco.se, pred.yl$vis.se), 
+          data = rep (c ("acoustic", "visual"), each = nrow (pred.yl)))
+
+# Year plot
+p1 <- ggplot (filter (pred.yl, lag == min (lag) | lag == 365), aes (x = week.2)) + geom_line (aes (y = fit, colour = as.factor (lag), linetype = data)) + theme_minimal () + 
+  geom_ribbon (aes (ymin = fit-se, ymax = fit+se, fill = as.factor (lag), linetype = data), alpha = 0.2)+
+  scale_colour_grey (name = "Lag\n (days)") + scale_fill_grey (name = "Lag\n (days)") +
+  xlab ("Week of the year") + ylab ("Capture probability") + ylim (0,1)
+
+# Lag plot
+p2 <- ggplot (filter (pred.yl, week.2 %in% round (seq (1,53/2, length.out = 2), week.2 != 1)), aes (x = lag)) + geom_line (aes (y = fit, colour = as.factor (week.2), linetype = data)) + theme_minimal () + 
+  geom_ribbon (aes (ymin = fit-se, ymax = fit+se, fill = as.factor (week.2), linetype = data), alpha = 0.2) + 
+  scale_colour_grey (name = "Week of\nthe year") + scale_fill_grey (name = "Week of\nthe year") +
+  xlab ("Lag (days)") + ylab ("Capture probability") + ylim (0,1)
+
+multiplot (p1, p2)
+```
+
+Now we will try 3D plots
+
+```{r}
+par (mfrow  = c (1,2))
+vis.gam (model.acoustic$gam, view = c ("week.2", "lag"), cond = list (                                                                  nStations = max (PADet.comb.2$nStations)), type = "response", theta = 90+30+90, phi =15, r = 1000, ticktype = "detailed", zlim = c (0,1), color = "bw", n.grid = 50, main = "Acoustic data", xlab = "Week of year", ylab = "Lag (days)", zlab = "Capture probability")
+
+vis.gam (model.visual$gam, view = c ("week.2", "lag"), cond = list (                                                                      hours = max (PAEnc.comb.tag$hours)), type = "response", theta = 90+30+90, phi =15, r = 1000, ticktype = "detailed", zlim = c (0,1), color = "bw", n.grid = 50, main = "Sightings data", xlab = "Week of year", ylab = "Lag (days)", zlab = "Capture probability")
+```
+
+Now we do interval plots for the basic models. We leave for later
+
+```{r}
+int.fixed.aco <- intervals (mb06$lme)$fixed %>% as.data.frame () %>%
+  mutate (variables = c ("Intercept", "Sex - Male", "Sex - UK", "Size", "Effort", "Lag"), method = "Photographic")
+
+int.fixed.vis <- rbind (intervals (me07$lme)$fixed %>% as.data.frame (), (intervals (me08$lme)$fixed %>% as.data.frame ())[2, ]) %>%
+  mutate (variables = c ("Intercept", "Sex - Male", "Effort", "Lag", "Size"), method = "Acoustic")
+
+int.fixed <- rbind (int.fixed.aco, int.fixed.vis)
+
+ggplot (filter (int.fixed, variables != "Lag", variables != "Intercept", variables != "Sex - UK"), aes (x = variables)) + 
+  geom_hline (aes(yintercept = 0), colour = "gray") + 
+  geom_point (aes (y = est., colour = method), position = position_dodge (width = 0.4), ymax = 0.2, stat = "identity") +
+  geom_errorbar (aes (y = est., ymin = lower, ymax = upper, colour = method), width = 0.2, position = position_dodge (width = 0.4), stat = "identity") + 
+  coord_flip () + theme_minimal () + scale_color_grey () + ylab ("Estimate") + xlab ("Fixed effects")
+```
+
+Now we try to select just the smooth components
+
+```{r}
+pred.smoo.lag <- data.frame (lag = seq (1, 567, by = 7), week.2 = 1, hours = 1, nStations = 1)
+pred.smoo.lag$aco.fit <- predict (model.acoustic$gam, newdata = pred.smoo.lag, type = "terms", se.fit = TRUE)$fit[, 3]
+pred.smoo.lag$aco.se <- predict (model.acoustic$gam, newdata = pred.smoo.lag, type = "terms", se.fit = TRUE)$se[, 3]
+pred.smoo.lag$vis.fit <- predict (model.visual$gam, newdata = pred.smoo.lag, type = "terms", se.fit = TRUE)$fit[, 3]
+pred.smoo.lag$vis.se <- predict (model.visual$gam, newdata = pred.smoo.lag, type = "terms", se.fit = TRUE)$se[, 3]
+
+# Melt data prediction data frame
+pred.smoo.lag <- rbind (pred.smoo.lag, pred.smoo.lag) %>% tbl_df () %>%
+  mutate (fit = c (pred.smoo.lag $aco.fit, pred.smoo.lag $vis.fit), 
+          se = c (pred.smoo.lag $aco.se, pred.smoo.lag $vis.se), 
+          data = rep (c ("acoustic", "visual"), each = nrow (pred.smoo.lag )))
+
+p1 <- ggplot (pred.smoo.lag, aes (x = lag)) + geom_line (aes (y = fit)) + facet_wrap (~data , scales = "free_y") + theme_minimal () + xlab ("Lag") + ylab ("Smooth of lag term") + geom_ribbon (aes (ymin = fit-se, ymax = fit+se), alpha = 0.2)
+
+pred.smoo.week <- data.frame (lag = 1, week.2 = seq (1, 53, by = 1), hours = 1, nStations = 1)
+pred.smoo.week$aco.fit <- predict (model.acoustic$gam, newdata = pred.smoo.week, type = "terms", se.fit = TRUE)$fit[, 2]
+pred.smoo.week$aco.se <- predict (model.acoustic$gam, newdata = pred.smoo.week, type = "terms", se.fit = TRUE)$se[, 2]
+pred.smoo.week$vis.fit <- predict (model.visual$gam, newdata = pred.smoo.week, type = "terms", se.fit = TRUE)$fit[, 2]
+pred.smoo.week$vis.se <- predict (model.visual$gam, newdata = pred.smoo.week, type = "terms", se.fit = TRUE)$se[, 2]
+
+# Melt data prediction data frame
+pred.smoo.week <- rbind (pred.smoo.week, pred.smoo.week) %>% tbl_df () %>%
+  mutate (fit = c (pred.smoo.week $aco.fit, pred.smoo.week $vis.fit), 
+          se = c (pred.smoo.week $aco.se, pred.smoo.week $vis.se), 
+          data = rep (c ("acoustic", "visual"), each = nrow (pred.smoo.week )))
+
+p2 <-  ggplot (pred.smoo.week, aes (x = week.2)) + geom_line (aes (y = fit)) + facet_wrap (~data , scales = "free_y") + theme_minimal () + geom_ribbon (aes (ymin = fit-se, ymax = fit+se), alpha = 0.2) + xlab ("Week of the year") + ylab ("Smooth of week term")
+
+multiplot (p1, p2)
+
+```
+
+# Depth and distance models
+
+## Prepare data
+We'll start by adding distance and depth information to the detection data frame
+
+```{r}
+station.distances <- read.csv ("../Raw Data/Stations_distance_20140923.csv")
+det.ws.depth <- left_join (det.ws, station.distances) %>%
+  mutate (depth = (sensor1 - 2)*3, distance = as.character (distance) %>% as.numeric ())
+```
+
+Now we determine if the detections are on the night or day based civil dawn and dusk
+
+```{r}
+# Mafia location
+m.coord <- matrix (39.6, -7.9, nrow = 1, ncol = 2)
+# Deposition
+dep <- 6
+
+det.ws.depth <- mutate (det.ws.depth, date = trunc (datetime, units = "days") %>% as.POSIXct ()) %>%
+  ddply ("date", function (x, m.coord, dep){
+  c.dawn <- crepuscule (m.coord, first (x$date), POSIXct.out = TRUE, direction = "dawn", solarDep = dep)$time
+  c.dusk <- crepuscule (m.coord, first (x$date), POSIXct.out = TRUE, direction = "dusk", solarDep = dep)$time
+  for (i in 1:nrow (x)){
+    if (x$datetime[i] < c.dawn | x$datetime[i] > c.dusk) {
+    x$day.night.c[i] <- "NIGHT" 
+  } else {
+    x$day.night.c[i] <- "DAY"
+  }
+  }
+  return (x)
+}, m.coord = m.coord, dep = dep, .parallel = TRUE) %>% tbl_df()
+```
+
+Establish receiver configuration in case it's needed as a random factor
+
+```{r}
+pres.det <- ddply (det.ws.depth, "date", function (x, times.in){
+  # Generate weekly approximations
+    stations.listening <- filter (times.in, x$date[1] >= date.in, x$date[1] <= date.out) %>% 
+      select (station) %>%
+      unique()
+  y <- data.frame (configuration = do.call (paste, as.list(stations.listening$station)), 
+                   nStations = nrow (stations.listening))
+    return (y)
+  }, times.in = times.in) %>% tbl_df ()
+
+det.ws.depth <- inner_join (det.ws.depth, pres.det)
+```
+
+Now we include shark size as well
+
+```{r}
+det.ws.depth <- inner_join (select (det.ws.depth, -(sex)), select (ws.tags, ecocean, size, sex)) %>%
+  mutate (week = week (datetime)) %>%
+  arrange (datetime)
+```
+
+## Models
+
+### Depth model
+
+```{r, eval = FALSE}
+# Basic model
+mde01 <- gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, gamma = 1.4)
+# With shark as a random factor
+mde02 <- gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, random = list (ecocean = ~ 1), gamma = 1.4)
+# Ecocean + temporal autocorrelation
+mde03 <- gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, random = list (ecocean = ~ 1), correlation = corAR1 (), gamma = 1.4)
+# Temporal ARMA
+# mde04 <-gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, correlation = corARMA (p =1, q = 1), gamma = 1.4)
+# ITS TOO LARGE FOR THE COMPUTER
+```
+
+The one with temporal correlation and ecocean is best, we'll now reduce the model
+
+```{r, eval = FALSE}
+mde03 <- gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, random = list (ecocean = ~ 1), correlation = corAR1 (), gamma = 1.4)
+mde04 <- gamm (depth ~ s (week, bs = 'cc')  + size + day.night.c, data = det.ws.depth, random = list (ecocean = ~ 1), correlation = corAR1 (), gamma = 1.4)
+mde05 <- gamm (depth ~ s (week, bs = 'cc') + sex + day.night.c, data = det.ws.depth, random = list (ecocean = ~ 1), correlation = corAR1 (), gamma = 1.4)
+mde06 <- gamm (depth ~ s (week, bs = 'cc') + day.night.c, data = det.ws.depth, random = list (ecocean = ~ 1), correlation = corAR1 (), gamma = 1.4)
+```
+
+### Distance models
+
+```{r}
+mdi01 <- gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, gamma = 1.4)
+mdi02 <- gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, gamma = 1.4, random = list (ecocean = ~ 1))
+# Seems to crash
+# mdi03 <- gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, gamma = 1.4, random = list (ecocean = ~ 1), correlation = corAR1 ())
+
+# mdi04 <- gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = det.ws.depth, gamma = 1.4, random = list (ecocean = ~ 1), correlation = corARMA (p = 1, q = 1))
+```
+
+```{r}
+mdi03 <- gamm (distance ~ s (week, bs = 'cr')  + size + day.night.c, data = det.ws.depth, gamma = 1.4, random = list (ecocean = ~ 1))
+```
+
+### Predictions from both models
+
+```{r}
+dep.dis.pred <- expand.grid (week = 1:53, size = c (5.81), day.night.c = c ("DAY", "NIGHT"))
+dep.dis.pred$dept.fit <- predict (mde06$gam, dep.dis.pred, type = "response", se.fit = TRUE)$fit %>% as.numeric ()
+dep.dis.pred$dept.se <- predict (mde06$gam, dep.dis.pred, type = "response", se.fit = TRUE)$se.fit %>% as.numeric ()
+dep.dis.pred$dist.fit <- predict (mdi03$gam, dep.dis.pred, type = "response", se.fit = TRUE)$fit %>% as.numeric ()
+dep.dis.pred$dist.se <- predict (mdi03$gam, dep.dis.pred, type = "response", se.fit = TRUE)$se.fit %>% as.numeric () * 3
+
+dep.dis.pred.sum <- tbl_df (dep.dis.pred) %>% 
+  group_by (week) %>%
+  summarize (dept.fit = mean (dept.fit), dept.se = mean (dept.se), dist.fit = mean (dist.fit), dist.se = mean (dist.se))
+```
+
+Plots
+```{r}
+
+# Mean between day and night
+p1 <- ggplot (dep.dis.pred.sum, aes (x = week, y = dept.fit)) + geom_line () + geom_ribbon (aes (ymin = dept.fit - dept.se, ymax = dept.fit + dept.se), alpha = 0.15) + theme_classic () + theme (text = element_text (family = "serif")) + xlab ("") + ylab ("Depth [m]") + xlim (1,53) + coord_cartesian (xlim = c(1, 53)) + scale_y_reverse ()
+
+p2 <- ggplot (dep.dis.pred.sum, aes (x = week, y = dist.fit)) + geom_line () + geom_ribbon (aes (ymin = dist.fit - dist.se, ymax = dist.fit + dist.se), alpha = 0.15) + theme_classic () + theme (text = element_text (family = "serif")) + xlab ("Week of the year") + ylab ("Distance from shore [km]") + coord_cartesian (xlim = c(1, 53)) + scale_y_continuous (breaks = c (2,4,6,8), labels = c("02","4","6","8"))
+
+multiplot (p1, p2, layout = matrix (c (1,2), ncol = 1))
+```
+
+
+# Again the models
+
+We will repeat the exersice of selecting a model for the probabilities biut this time using gamm4 as well
+
+```{r}
+men01lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag)
+men02lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean))
+men03lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + hours, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+men04lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+men05lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + hours, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+men06lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + size + hours, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+men07lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+men08lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + hours, family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+men09lme4 <- gamm4 (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr"), family = "binomial", data = PAEnc.comb.tag, random = ~(1|ecocean/date.random))
+```
+ 
+```{r}
+
+PADet.comb.2 <- filter (PADet.comb.2, batch != "2014-1")
+
+mac01lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial")
+mac02lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean))
+# Only date into shark
+mac03lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size + nStations), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+
+mac04lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex  + nStations), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+mac05lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr")  + size + nStations), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+mac06lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex + size), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+
+mac07lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + nStations), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+mac08lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + sex ), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+mac09lme4 <- gamm4 (formula = formula (present ~ s (week.2, bs = "cc") + s (lag, bs = "cr") + size ), data = PADet.comb.2, family = "binomial", random= ~(1|ecocean/date.random))
+```
+
+Save acoustic models
+
+```{r}
+save (mac01lme4, mac02lme4, mac03lme4, mac04lme4, mac05lme4, mac06lme4, mac07lme4, mac08lme4, mac09lme4, file = "~/Fernando/MAP_AcousticModels.RData")
+```
+
+
+# Result tables
+
+```{r}
+
+# Distance model
+table.dist <- rbind (anova (mdi02$gam)$pTerms.table, 
+       anova (mdi02$gam)$s.table[-1])
+table.depth <- rbind (anova (mde03$gam)$pTerms.table, 
+       anova (mde03$gam)$s.table[-1])
+table.visual <- rbind (anova (men03lme4$gam)$pTerms.table, 
+       anova (men03lme4$gam)$s.table[, -1])
+table.acoustic <- rbind (anova (mac03lme4$gam)$pTerms.table, 
+       anova (mac03lme4$gam)$s.table[, -1])
+
+ xtable (table.depth, digits = c (0, 1, 2, 2), caption = "Table Depth") %>% print (type = "html", include.rownames = FALSE)
+
+ xtable (table.dist, digits = c (0, 1, 2, 2), caption = "Table Dist") %>% print (type = "html", include.rownames = FALSE)
+
+xtable (table.visual, digits = c (0, 1, 2, 2), caption = "Table Visual Encounters") %>% print (type = "html", include.rownames = FALSE)
+
+xtable (table.acoustic, digits = c (0, 1, 2, 2), caption = "Table Acoustic Encounters") %>% print (type = "html", include.rownames = FALSE)
+
+# Selection model table: Acoustic
+
+aic.acoustic <- AIC (mac01lme4$mer, mac02lme4$mer, mac03lme4$mer, mac04lme4$mer, mac05lme4$mer, mac06lme4$mer, mac07lme4$mer, mac08lme4$mer, mac09lme4$mer)
+
+extract.terms <- function (x){
+  terms <- (attr (x$terms, "factors") %>% row.names ())[-1]
+  terms <- do.call (paste, as.list (terms))
+  return (terms)
+}
+
+# Acoustic model
+formulas.acoustic <- rbind (extract.terms (mac01lme4$gam), extract.terms (mac02lme4$gam), extract.terms (mac03lme4$gam), extract.terms (mac04lme4$gam), extract.terms (mac05lme4$gam), extract.terms (mac06lme4$gam), extract.terms (mac07lme4$gam), extract.terms (mac08lme4$gam), extract.terms (mac09lme4$gam))
+
+sel.acoustic <- cbind (formulas.acoustic, aic.acoustic) %>%
+  mutate (DAIC = AIC - min (AIC)) 
+row.names (sel.acoustic) <- NULL
+
+xtable (sel.acoustic, caption = "Table Acoustic Residency Selection table") %>% print (type = "html", include.rownames = FALSE)
+
+summary (mac03lme4$gam)$p.table %>% xtable (caption = "Acoustic results p") %>% print (type = "html")
+summary (mac03lme4$gam)$s.table %>% xtable (caption = "Acoustic results s") %>% print (type = "html")
+
+# Visual model
+
+aic.visual <- AIC (men01lme4$mer, men02lme4$mer, men03lme4$mer, men04lme4$mer, men05lme4$mer, men06lme4$mer, men07lme4$mer, men08lme4$mer, men09lme4$mer)
+
+formulas.visual <- rbind (extract.terms (men01lme4$gam), extract.terms (men02lme4$gam), extract.terms (men03lme4$gam), extract.terms (men04lme4$gam), extract.terms (men05lme4$gam), extract.terms (men06lme4$gam), extract.terms (men07lme4$gam), extract.terms (men08lme4$gam), extract.terms (men09lme4$gam))
+
+sel.visual <- cbind (formulas.visual, aic.visual) %>%
+  mutate (DAIC = AIC - min (AIC)) 
+row.names (sel.visual) <- NULL
+
+xtable (sel.visual, caption = "Table Visual Residency Selection table") %>% print (type = "html", include.rownames = FALSE)
+
+summary (men03lme4$gam)$p.table %>% xtable (caption = "Visual results p") %>% print (type = "html")
+summary (men03lme4$gam)$s.table %>% xtable (caption = "Visual results s") %>% print (type = "html")
+
+# Results distance
+summary (mdi02$gam)$p.table %>% xtable (caption = "Distance results p") %>% print (type = "html")
+summary (mdi02$gam)$s.table %>% xtable (caption = "Distance results s") %>% print (type = "html")
+
+# Results depth
+summary (mde03$gam)$p.table %>% xtable (caption = "Depth results p") %>% print (type = "html")
+summary (mde03$gam)$s.table %>% xtable (caption = "Depth results s") %>% print (type = "html")
+
+```
+
+Plots again
+
+```{r}
+# Median tagging date
+first.date <- mean ((ws.tags %>% filter (batch != "2014-1"))$date.tag) %>% as.Date () -2
+last.date <- as.Date ("2014-04-07")
+pred.date <- foreach (i=1:length(first.date), .combine = rbind) %do%{
+  expand.grid (date.1 = first.date[i], 
+                     date.2 = seq (first.date[i], last.date, by ="week"), 
+                     hours = max (PAEnc.comb.tag$hours) + 1, 
+                     nStations = max (PADet.comb.2$nStations)) + 1 %>%
+    mutate (week.2 = week (date.2), 
+            lag = as.numeric (date.2) - as.numeric (date.1)) %>%
+    tbl_df()
+}
+pred.date <- cbind (pred.date, predict (mac07lme4$gam, pred.date, type = "response", se.fit = TRUE))
+pred.date <- cbind (pred.date, predict (men08lme4$gam, pred.date, type = "response", se.fit = TRUE)) %>% tbl_df()
+names (pred.date)[7:10] <- c("aco.fit", "aco.se", "vis.fit", "vis.se")
+
+# Melt data prediction data frame
+pred.date <- rbind (pred.date, pred.date) %>% tbl_df () %>%
+  mutate (fit = c (pred.date$aco.fit, pred.date$vis.fit), 
+          se = c (pred.date$aco.se, pred.date$vis.se), 
+          data = rep (c ("acoustic", "visual"), each = nrow (pred.date)))
+
+save (pred.date, file = "prediction_dataframes2.RData")
+
+# Plot probabilities for just one initial date
+p2 <- ggplot(pred.date, aes (x = date.2)) + 
+  geom_line (aes (y = fit, colour = data))  + 
+  theme_classic () + 
+  geom_ribbon (aes (ymin = fit - se, ymax = fit + se, fill = data), alpha = 0.15) +
+  scale_fill_manual (values = c("#006F51", "#000000")) +
+  scale_colour_manual (values = c("#006F51", "#000000")) +
+  xlab ("Date") + ylab ("Capture probability") + theme (text = element_text (family = "serif"), legend.position = "none")
+``` 
+
