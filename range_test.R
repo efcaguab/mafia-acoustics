@@ -1,6 +1,6 @@
 # Anaylysis of range test stuff. I want to evaluate the two range tests simultaniously in the same model but using location as a random factor.
 
-setwd ("~/Fernando/Dropbox/Research/Whale Shark Mafia Island/Residency paper/MAP - Analysis/")
+#setwd ("~/Fernando/Dropbox/Research/Whale Shark Mafia Island/Residency paper/MAP - Analysis/")
 ## LOAD LIBRARIES AND PREPROCESSED DATA ----------------------------------
 
 load ("../Processed Data/AllDetections.RData")
@@ -14,6 +14,7 @@ library (foreach)
 library (lubridate)
 library (ggplot2)
 library (nlme)
+library (grid)
 
 # SELECT RANGE TEST DETECTIONS --------------------------------------------
 
@@ -182,7 +183,7 @@ PREDICT <- expand.grid (DIST = 1:800)
 # }
 # Bootstrap results
 library (doMC)
-registerDoMC (cores = 24)
+registerDoMC (cores = 30)
 data <- RT
 pred <- PREDICT
 prediction <- foreach (i = 1:nrow(data), .combine = rbind, .inorder = FALSE) %dopar% {
@@ -225,14 +226,32 @@ PREDICT$DP.high <- high (PREDICT$DIST)
 # PREDICT$DP.low[is.na(PREDICT$DP.low)] <- apply (pred$t[, is.na(PREDICT$DP.low)], 2, mean) - 1.95 * apply (pred$t[, is.na(PREDICT$DP.low)], 2, sd)
 # PREDICT$DP.high[is.na(PREDICT$DP.high)] <- apply (pred$t[, is.na(PREDICT$DP.high)], 2, mean) + 1.95 * apply (pred$t[, is.na(PREDICT$DP.high)], 2, sd)
 
-pdf ("./Fig/RangeTest.pdf", width = 3, height = 3/sqrt(2), pointsize = 1)
-ggplot () + geom_line (data = PREDICT, aes (y = DP.mean, x = DIST)) +
-  geom_ribbon (data = PREDICT, aes(x = DIST, ymax = DP.high, ymin = DP.low), alpha = 0.2) + 
-  #geom_line(data = PREDICT[PREDICT$DAY.NIGHT.NUM != 0.5 & PREDICT$DEPTH == 19.5, ], aes (x = DIST, y = DP.mean, linetype = as.factor(DAY.NIGHT.NUM))) + 
-  ylim(0,1) + theme_classic () + theme(legend.position = "none", text = element_text(size = 8)) + xlab ("Distance (m)") + ylab ("Detection probability") +
-  geom_hline (aes (yintercept = c(0.5)), linetype = 2)
-# ggplot(range.test, aes(x = DIST, y = DP)) + geom_point() + geom_smooth(aes (colour = as.factor(DEPTH)), method = "glm", family = "binomial")
-dev.off()
+ggplot () + 
+  geom_hline (aes (yintercept = c(0.5)), linetype = 2, colour = "#555555", size = 0.3) + 
+  geom_vline (aes (xintercept = c( 342)), linetype = 2, colour = "#555555", size = 0.3) +
+  geom_line (data = PREDICT, aes (y = DP.mean, x = DIST)) +
+  geom_ribbon (data = PREDICT, 
+               aes(x = DIST, ymax = DP.high, ymin = DP.low), 
+               alpha = 0.15) + 
+  ylim(0,1) + 
+  xlab ("Distance (m)") + ylab ("Detection probability") +
+  theme_linedraw () +
+  theme (legend.position = c (0,1), 
+         text = element_text (family = "serif"), 
+         legend.justification = c (0,1), 
+         legend.title.align = 0.5, 
+         legend.text.align = 0.5, 
+         legend.box.just = "left", 
+         legend.title = element_text(face = "italic", size = 8),
+         axis.title = element_text(size = 8),
+         axis.text = element_text(size = 8), 
+         text = element_text (),
+         legend.text = element_text(size = 8), 
+         panel.grid = element_line (colour = "gray"), 
+         panel.grid.major = element_line (colour = "gray"), 
+         panel.grid.minor = element_line (colour = "gray"), 
+         plot.margin = unit (c (1,2,0,0), "pt"))
+ggsave ("RT.pdf", width = 9, height = 9/sqrt(2), units = "cm", pointsize = 8)
 
 # pdf ("RangeTest.pdf", width = 3, height = 3/sqrt(2), family = "Times", pointsize = 1)
 # ggplot () + geom_line (data = PREDICT[PREDICT$DAY.NIGHT.NUM == 0.5 & PREDICT$DEPTH == 19.5, ], aes (y = DP.mean, x = DIST)) +
@@ -251,8 +270,8 @@ dev.off()
 
 # Latex tables ------------------------------------------------------------
 
-libarry(xtable)
-xtable (summary(MODEL.20)$tTable)
+library (xtable)
+xtable (summary(MODEL.6)$tTable) %>% print (type = "html")
 A <-anova (MODEL.6, MODEL.7, MODEL.8, MODEL.9, MODEL.10, MODEL.11, MODEL.12, MODEL.13, MODEL.14, MODEL.15, MODEL.16, MODEL.17, MODEL.18, MODEL.19, MODEL.20)
 call <- unlist(lapply(strsplit(as.character(A$call), ","), function(x) x[1]))
 call <- gsub("gls(model = DPLOGIT ~ ", "",  as.character(call), fixed = TRUE)
@@ -264,4 +283,4 @@ call <- gsub("$ + $", " + ",  as.character(call), fixed = TRUE)
 A$call <- call
 A$dAIC <- A$AIC - min(A$AIC)
 row.names(A) <- NULL
-xtable(A[, c(1,3,4, 10)])
+xtable(A[, c(1,3,4, 10)]) %>% print (type = "html")

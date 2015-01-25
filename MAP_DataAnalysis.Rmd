@@ -1,0 +1,312 @@
+---
+title: "Mafia Acoustic Paper - Data Analysis"
+author: "Fernando Cagua"
+date: "1/26/2015"
+output:
+  html_document:
+    css: style.css
+    highlite: kate
+    toc: yes
+---
+
+```{r, include=FALSE}
+library (plyr)
+library (dplyr)
+library (magrittr)
+library (ggplot2)
+library (VTrack)
+library (lubridate)
+library (foreach); registerDoMC (cores = 30)
+```
+
+
+Here we re-analyze the whale shark acoustic and visual data. Cleaner and nicer than before.
+
+# Preprocessing
+
+## Acoustic data
+We first import the all files that contain the data we want to work with. That includes the csv containing the raw detections as exported by VUE, the receiver events file (from VUE), the array events file and the list of whale sharks tagged. And the list with sharks known to have lost their tag.
+
+```{r}
+# Read CSV detection file and process it with VTrack
+MAFIA.DETECTIONS <- ReadInputData (
+  read.csv ("../Raw Data/AllMafiaDetections_20141210.csv"),
+  iHoursToAdd = 3) %>% tbl_df ()
+MAFIA.DETECTIONS$DATETIME <- as.POSIXct (
+  as.POSIXlt (MAFIA.DETECTIONS$DATETIME, tz="Africa/Dar_es_Salaam"))
+
+RECEIVER.EVENTS <- read.csv ("../Raw Data/AllMafiaEvents_20141210.csv")
+ARRAY.EVENTS <- read.csv ("../Raw Data/ArrayEvents_20141211.csv")
+WS.TAGS <- read.csv ("../Raw Data/WSTags_20140909.csv")
+
+TAG.LOST <- data.frame (id = c ("X","TZ-030", "TZ-068", "TZ-040", "TZ-032", "TZ-064"), 
+                        date = as.Date (c ("2012-10-26","2013-07-25", "2013-11-15", "2014-12-11", "2014-01-09", "2013-11-11")))
+```
+
+### Correct time drift
+
+We also correct for time drift using the events exported from VUE. It is necessary to check manually that all entries are correct, i.e. to check that all the time zones were correctly set up. We found four inconsistencies.
+
+```{r}
+# Read CSV events file 
+
+names (RECEIVER.EVENTS) <- c ("DATETIME", "RECEIVERID", "DESC", "DATA", "UNITS")
+RECEIVER.EVENTS$DATETIME <- as.POSIXct (RECEIVER.EVENTS$DATETIME, tz ="UTC")
+RECEIVER.EVENTS$DATETIME <- as.POSIXct (
+  as.POSIXlt (RECEIVER.EVENTS$DATETIME, tz="Africa/Dar_es_Salaam"))
+PC.TIMES <- RECEIVER.EVENTS [RECEIVER.EVENTS$DESC == "PC Time", c (1, 2, 4)]
+# We manually checked that all PC times are in the time-zone GMT+3 so we can go ahead and convert the PC times to POSIXct class
+PC.TIMES$DATA <- as.POSIXct (
+  substr (as.character (PC.TIMES$DATA), 1, 19), tz="Africa/Dar_es_Salaam")
+
+# # Plots to check for time zone and computer time mistakes
+# ggplot(PC.TIMES) + geom_line (aes (x = DATA, y = as.vector (DATA - DATETIME)/60)) + facet_grid (. ~ RECEIVERID , scale = "fixed")
+# U <- PC.TIMES[PC.TIMES$RECEIVERID == "VR2W-104845", ]
+# V <- data.frame (DATETIME = seq (min(U$DATETIME), max(U$DATETIME), "week"), DIFF = approx (as.numeric(U$DATA), as.vector (U$DATA - U$DATETIME), seq (min(U$DATETIME), max(U$DATETIME), "week")))
+# ggplot
+
+# Error for Data Upload on 2013-01-27 09:21:07 (receiver time) for VR2W-104847
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 09:21:07")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 09:21:07")] + 3600*3
+# Error for Data Upload on 2013-01-22 11:37:46 (receiver time) for VR2W-104848
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-22 11:37:46")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-22 11:37:46")] + 3600*3
+# Error for Data Upload on 2013-01-27 08:12:34 (receiver time) for VR2W-109044
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 08:12:34")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 08:12:34")] + 3600*3
+# Error for Data Upload on 2013-01-27 07:42:54 (receiver time) for VR2W-113484
+PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 07:42:54")] <- PC.TIMES$DATA[PC.TIMES$DATETIME == as.POSIXct ("2013-01-27 07:42:54")]  + 3600*3
+
+# Correct time drift 
+receiverIDs <- levels (MAFIA.DETECTIONS$RECEIVERID)
+#pb <- txtProgressBar(max=length (receiverIDs), style = 3)
+for (i in 1:length (receiverIDs)){
+  #setTxtProgressBar (pb, i)
+  receiver.PC.TIMES <- PC.TIMES[PC.TIMES$RECEIVERID == receiverIDs[i], ]
+  drift <- approx (receiver.PC.TIMES$DATA, receiver.PC.TIMES$DATA - receiver.PC.TIMES$DATETIME, MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME)$y
+  MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME <- MAFIA.DETECTIONS[MAFIA.DETECTIONS$RECEIVERID == receiverIDs[i], ]$DATETIME + drift
+}
+#close (pb)
+```
+
+### Assign detections to stations
+
+In order to assign detections to stations we import a table containing a list of the times when a receiver was deployed or retrieved and where. Each detection is then assigned to a particular station (location) as opposed to a specific receiver. This procedure automatically takes out detections that occurred when receivers were outside of the water.
+
+```{r}
+# Read and organize events (retrievals/deployments) data
+ARRAY.EVENTS <- ARRAY.EVENTS %>% tbl_df () %>%
+  filter (EVENT == "DEP" | EVENT == "RET") %>%
+  mutate (DATETIME = as.POSIXct (DATE, format = "%d/%m/%y %H:%M", tz = "Africa/Dar_es_Salaam"),
+          STATIONNAME = as.factor (STATION),
+          RECEIVERID = REC) %>%
+  select (DATETIME, STATIONNAME, EVENT, RECEIVERID)
+
+# Read stations file and assign detections to stations
+STATIONS <- read.csv ("../Raw Data/Stations_20130205.csv")
+# Assign station and location
+
+for (i in 1:nrow (ARRAY.EVENTS)){  # For each event
+  # If is a deployment change the station for the future
+  if (ARRAY.EVENTS$EVENT[i] == "DEP"){  
+    
+    replace.index <- (as.character (ARRAY.EVENTS$RECEIVERID[i]) == as.character(MAFIA.DETECTIONS$RECEIVERID)) & (MAFIA.DETECTIONS$DATETIME >= ARRAY.EVENTS$DATETIME[i]) 
+    # Include station
+    MAFIA.DETECTIONS$STATIONNAME [replace.index] <- as.character (ARRAY.EVENTS$STATIONNAME[i])
+  }
+  # If is a retrieval delete data for the future
+  else {  
+    replace.index <- (as.character (ARRAY.EVENTS$RECEIVERID[i]) == as.character(MAFIA.DETECTIONS$RECEIVERID)) & 
+      (MAFIA.DETECTIONS$DATETIME >= ARRAY.EVENTS$DATETIME[i]) 
+    MAFIA.DETECTIONS$STATIONNAME[replace.index] <- NA
+  }
+}
+
+
+#close (pb)
+# Delete detections outside valid intervals
+MAFIA.DETECTIONS <- MAFIA.DETECTIONS %>% filter (STATIONNAME != "Unknown", !is.na (STATIONNAME))
+
+save (MAFIA.DETECTIONS, ARRAY.EVENTS, file ="../Processed Data/AllDetections.RData")
+rm (i, replace.index)
+```
+
+### Filter detections
+
+Here we filter out only whale shark tags (discarding range test, foreign and collisions). I use the list of tagged sharks for that. Simultaneously, to prevent the analysis of potentially un-natural behavior the first 48 hours of detections are removed. It also assigns a unique whale shark ID to each transmitter ID.
+
+```{r}
+# Read file with Whale Shark Tag lists
+WS.TAGS$DATE <- as.POSIXct (WS.TAGS$DATE, format="%d/%m/%Y", tz = "Africa/Dar_es_Salaam")
+WS.TAGS$NAME <- WS.TAGS$COMMENT <- WS.TAGS$SHARK <- NULL
+
+# Select only whale shark detections 
+DET.WS <- MAFIA.DETECTIONS[!is.na (match (MAFIA.DETECTIONS$TRANSMITTERID, WS.TAGS$TRANSMITTERID)), ]
+
+# Remove detections before 48 hours after tagging date
+for (i in 1: nrow(WS.TAGS)){
+  next2.days <- WS.TAGS$DATE + 60 * 60 * 24 * 2  # Add two days
+  replace.index <- as.character (DET.WS$TRANSMITTERID) == as.character (WS.TAGS$TRANSMITTERID[i])
+  # Delete rows that are in the tagging day
+  DET.WS <- subset (DET.WS, ! (replace.index & (DET.WS$DATETIME < next2.days[i]))) 
+}
+
+# Remove unused tags from the factor list
+DET.WS$TRANSMITTERID <- factor (DET.WS$TRANSMITTERID)
+rm (i, next2.days, replace.index)
+```
+
+### Foreign tags
+
+Remove range test tags and whale shark tags. There was an “abbandoned” tag in fron of K11 for a long time. We’ll remove it. Also Because some of them might be colissions, we’ll discard any with less than two detections
+
+```{r}
+range.test.tags <- read.csv ("../Raw Data/RTTags_20130305.csv")
+DET.RT <- filter (MAFIA.DETECTIONS, TRANSMITTERID %in% range.test.tags$Transmitter)
+
+ddet.ws <- filter (MAFIA.DETECTIONS, TRANSMITTERID %in% WS.TAGS$TRANSMITTERID)
+foreign.detections <- anti_join (MAFIA.DETECTIONS, ddet.ws) %>%
+  anti_join (DET.RT) %>% 
+  filter (TRANSMITTERID != "A69-1303-53872") %>%
+  select (-(STATIONNAME)) %>%
+  ddply ("TRANSMITTERID", function (x){
+  if (nrow (x) > 1) {
+    return (x)
+  } else {
+    return (NULL)
+    }
+})
+foreign.detections$TRANSMITTERID <- factor (foreign.detections$TRANSMITTERID)
+```
+
+# Residency models
+
+First we write the function that calculates the probabilities. It includes the initiall as well as the final date.
+
+```{r}
+# Function to calculate the vectors of presence absence
+pres.abs.lag <- function (start.date, end.date, sightings, dates){
+  # Create a data frame with the detections
+  sight <- data.frame (id = sightings, date = dates) %>%
+    filter (date >= start.date, date <= end.date) %>%
+    mutate (id = factor (id)) %>% 
+    arrange (date)
+  
+  # For each shark we'll start with the first detection only
+  individuals <- levels (sight$id)
+  # Cycle trough each shark
+  presence.absence <- foreach (i=1:length (individuals),
+                               .combine = rbind) %dopar% {
+    # Find dates in which the shark was present
+    dates.present <- sight$date[sight$id == individuals[i]] %>%
+      as.numeric ()
+    # Establish all dates in which it was tagged (only dates in which there was monitoring)
+    dates.tagged <- unique(sight$date)[unique(sight$date) > 
+                                         sight$date[match (individuals[i], sight$id)]]
+    # Find all possible combinations of dates in which it was tagged
+    dates.comb <- as.data.frame (t (combn (dates.tagged, 2))) %>%
+      tbl_df()
+    names (dates.comb) <- c ("date.1", "date.2")
+    dates.comb <- mutate (dates.comb, lag = date.2 - date.1, # Find the lag between given dates
+                          # Establish if it was present for in that lag
+                          present = (date.1 %in% dates.present) &
+                            (date.2 %in% dates.present), 
+                          date.1 = as.Date(date.1, origin = "1970-01-01"), 
+                          date.2 = as.Date(date.2, origin = "1970-01-01"), 
+                          id = individuals[i])
+    return (dates.comb)
+  }
+  return (presence.absence)
+}
+```
+
+## Acoustic data
+
+Now we aggregate the detecton data into weeks. We also note that Emmental TZ-003 was tagged twice, but lost it’s first tag leaving no detections. The data frame aco.week now contains the information we need: ecocean number, sex, bacth and the date it was tagged.
+
+```{r}
+det.ws <- tbl_df (DET.WS)  # Convert to tbl data frame
+ws.tags <- tbl_df (WS.TAGS)
+names (det.ws) <- names (det.ws) %>% tolower ()  # change names to lower case 
+names (ws.tags) <- names (ws.tags) %>% tolower ()
+names (ws.tags)[2] <- "date.tag"
+
+# Using only sharks present in the list of tagged sharks merge data frames
+det.ws <- inner_join (det.ws, select (ws.tags, -(size), -(number)))
+
+# Clump in a weekly basis
+det.ws <- mutate (det.ws, date.week = cut (datetime, '2 week') %>% as.Date ())
+aco.week <- ddply (det.ws, "date.week", function (det){
+  sharks <- !duplicated (det$ecocean)
+  per.week <- data.frame (ecocean = det$ecocean[sharks], 
+                          sex = det$sex[sharks],
+                          batch = det$batch[sharks], 
+                          date.tag = det$date.tag[sharks])
+}) %>% tbl_df ()
+```
+
+For this paper we decided we are only going to work with the data generated by the first 30 tagged sharks. We filter out all other sharks and calculate the response variables
+
+```{r}
+# Filter only the first sharks
+aco.week <- aco.week %>% filter (batch == "2012-1" | batch == "2012-2")
+
+# Calculate probabilities
+PADet <- pres.abs.lag (start.date = min (aco.week$date.week), 
+                       end.date = max (aco.week$date.week),
+                       sightings = aco.week$ecocean, 
+                       dates = aco.week$date.week)
+# Change "id" column to "ecocean"
+names (PADet)[5] <- "ecocean"
+
+# Put shark info back into the data-frame
+PADet <- left_join (PADet, ws.tags %>% select (ecocean, sex, size, batch))
+```
+
+Before we continue we have to include introduce a variable of effort. In the case of the acoustic model it is the average number of working receivers per week.
+
+```{r}
+# Arrange by date
+array.events <- ARRAY.EVENTS %>% tbl_df () %>%
+  arrange (DATETIME) 
+# Change the ugly names in uppercase to lowercase
+names (array.events) <- names (array.events) %>% tolower ()
+array.events %<>% mutate_each (funs (as.character), -(datetime))
+
+# Change the format of the events by date to a format by station
+times.in <- ddply (array.events, "stationname", function (x){
+  # Determine when a receiver was deployed in the station
+  deployed <- x %>% filter (event == "DEP", lead (event) == "RET")
+  # Determine when a receiver was retrieved from the station
+  retrieved <- x %>% filter (event == "RET", lag (event) == "DEP")
+  if (nrow (deployed) > 0) {
+    y <- data.frame (station = first (x$stationname), 
+                     date.in = deployed$datetime, 
+                     date.out = retrieved$datetime,
+                     rec.in = deployed$receiverid,
+                     rec.out = retrieved$receiverid)
+    return (y)
+  } else return (NULL)
+}) %>%  
+  # Generate weekly approximations
+  mutate (w.date.in = cut (date.in, 'week'),
+                      w.date.out = cut (date.out, '2 week')) %>% tbl_df()
+
+# For each re-detection date calculate the number of working stations
+pres <- ddply (PADet, "date.2", function (x, times.in){
+  # Filter out stations active at that date
+    stations.listening <- filter (times.in, x$date.2[1] >= as.Date (w.date.in), x$date.2[1] <= as.Date (w.date.out)) %>% 
+      select (station) %>%
+      unique()
+    # Create data frame with the list and the number of stations
+  y <- data.frame (configuration = do.call (paste, as.list(stations.listening$station)), 
+                   nStations = nrow (stations.listening))
+    return (y)
+  }, times.in = times.in) %>% tbl_df ()
+
+# Merge with the Probability of acoustic detection data frame
+PADet <- inner_join (PADet, pres %>% select (date.2, nStations)) %>%
+  # Simplify factors by making them integers
+  mutate (week.1 = week (date.1), 
+          week.2 = week (date.2), 
+          date.random = (as.numeric (date.1) - as.numeric (min (date.1))) / 7, 
+          date.id = paste (date.1, ecocean))
+```
+
