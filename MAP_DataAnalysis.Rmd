@@ -17,6 +17,7 @@ library (ggplot2)
 library (VTrack)
 library (lubridate)
 library (foreach); registerDoMC (cores = 30)
+library (knitr)
 ```
 
 
@@ -337,9 +338,10 @@ PADet %<>% left_join (tag.lost %>% select (ecocean, date.min)) %>% {
 ### Fit models
 
 To fit the models we use the library `gamm4` as opposed as the traditional `gamm` because although slower and less stable it offers better results for binary data.
-We also start
 
-```{r, message=FALSE, cache=TRUE}
+#### Random component
+
+```{r, eval = FALSE}
 library (gamm4)
 
 # Choose the random structure
@@ -347,14 +349,37 @@ ma.r.01 <- . %>% gamm4 (present ~ s (week.2, bs = "cc") + s (lag) + nStations + 
 ma.r.02 <- . %>% gamm4 (present ~ s (week.2, bs = "cc") + s (lag) + nStations + sex + size, family = "binomial", data = ., random= ~(1|ecocean))
 ma.r.03 <- . %>% gamm4 (present ~ s (week.2, bs = "cc") + s (lag) + nStations + sex + size, family = "binomial", data = ., random= ~(1|ecocean/date.random))
 
+# Join instruction together so that they can be evaluated in parallel
 ma.r <- c (ma.r.01, ma.r.02, ma.r.03)
+# Evaluate the models
 models.acoustic.random <- foreach (i = 1:length(ma.r)) %dopar% ma.r[[i]](PADet)
+# Save them so that we don't have to wait for so long each time...
+saveRDS (models.acoustic.random, "../Processed Data/models_acoustic_random.rds")
+```
+
+```{r}
+# We convert the results into a data_frame for easy manipulation
+models.acoustic.random <- 
+  readRDS ("../Processed Data/models_acoustic_random.rds") %>% {
+  data_frame (gam = lapply (., function (x) x$gam),
+              mer = lapply (., function (x) x$mer))
+} %>%
+  mutate (AIC = mer %>% lapply (function (x) AIC (x)) %>% unlist,
+          DAIC = AIC - min (AIC), 
+          formula = mer %>% lapply (function (x) formula (x)) %>% as.character) %>%
+  arrange (AIC)
+
+models.acoustic.random %>%
+  select (formula, AIC, DAIC) %>% 
+  kable ()
 ```
 
 The nest model by AIC is the one that includes both random factors (date nested into shark). 
-Now we'll select the best fixed structure
 
-```{r, cache=TRUE}
+#### Fixed component
+
+```{r, eval = FALSE}
+# We define the models
 ma.f.01 <- . %>% gamm4 (present ~ s (week.2, bs = "cc") + s (lag) + nStations + sex + size, family = "binomial", data = ., random= ~(1|ecocean/date.random))
 ma.f.02 <- . %>% gamm4 (present ~ s (week.2, bs = "cc") + s (lag) + nStations + sex, family = "binomial", data = ., random= ~(1|ecocean/date.random))
 ma.f.03 <- . %>% gamm4 (present ~ s (week.2, bs = "cc") + s (lag) + nStations + size, family = "binomial", data = ., random= ~(1|ecocean/date.random))
@@ -386,24 +411,187 @@ ma.f.28 <- . %>% gamm4 (present ~ nStations, family = "binomial", data = ., rand
 ma.f.29 <- . %>% gamm4 (present ~ sex, family = "binomial", data = ., random= ~(1|ecocean/date.random))
 ma.f.30 <- . %>% gamm4 (present ~ size, family = "binomial", data = ., random= ~(1|ecocean/date.random))
 
+# We join the instruction together
 ma.f <- c (ma.f.01, ma.f.02, ma.f.03, ma.f.04, ma.f.05, ma.f.06, ma.f.07, ma.f.08, ma.f.09, ma.f.10, ma.f.11, ma.f.12, ma.f.13, ma.f.14, ma.f.15, ma.f.16, ma.f.17, ma.f.18, ma.f.19, ma.f.20, ma.f.21, ma.f.22, ma.f.23, ma.f.24, ma.f.25, ma.f.26, ma.f.27, ma.f.28, ma.f.29, ma.f.30)
 
+# We fit the models and save the results
 models.acoustic.fixed <- foreach (i = 1:length(ma.f)) %dopar% ma.f[[i]](PADet)
-save (models.acoustic.fixed, file = )
+saveRDS (models.acoustic.fixed, file = "../Processed Data/models_acoustic_fixed.rds")
 ```
 
 ```{r}
 models.acoustic.fixed <- 
-  data_frame (gam = lapply (models.acoustic.fixed, function (x) x$gam),
-            formula = lapply (models.acoustic.fixed, function (x) x$gam %>% formula),
-            mer = lapply (models.acoustic.fixed, function (x) x$mer), 
-            AIC = lapply (models.acoustic.fixed, function (x) x$mer %>% AIC) %>% unlist)
+  readRDS ("../Processed Data/models_acoustic_fixed.rds") %>% {
+  data_frame (gam = lapply (., function (x) x$gam),
+            mer = lapply (., function (x) x$mer))
+} 
 
-models.acoustic.fixed %<>%
-  mutate (formula = as.character (formula),
-          DAIC = AIC - min (AIC), 
-          BIC = mer %>% lapply (function (x) x %>% BIC) %>% unlist,
-          DBIC = BIC - min (BIC)) %>%
-  arrange (DAIC)
+models.acoustic.fixed %<>% 
+  mutate (AIC = mer %>% lapply (function (x) AIC(x)) %>% unlist,
+          DAIC = AIC - min (AIC),
+          formula = gam %>% lapply (function (x) formula(x)) %>% as.character) %>%
+  arrange (AIC)
+
+models.acoustic.fixed %>% 
+  select (formula, AIC, DAIC) %>%
+  kable ()
+
+models.acoustic.fixed$gam[1][[1]] %>% plot (select = 1)
+models.acoustic.fixed$gam[1][[1]] %>% plot (select = 2)
 ```
+
+The strongest support is for the model with week, lag and effort, some degree of support also exists for the model that takes sex into account and the one that doesn't includes the number of stations. 
+Remarkably week and lag are the only important predictors.
+
+## Visual data
+
+## Integration and prediction
+
+# Depth and distance models
+
+## Prepare data
+
+We'll start by adding distance and depth information to the detection data frame
+
+```{r}
+station.distances <- read.csv ("../Raw Data/Stations_distance_20140923.csv")
+det.ws.depth <- left_join (det.ws, station.distances) %>%
+  mutate (depth = (sensor1 - 2)*3, distance = as.character (distance) %>% as.numeric ())
+```
+
+Now we determine if the detections are on the night or day based civil dawn and dusk
+
+```{r}
+# Mafia location
+m.coord <- matrix (39.6, -7.9, nrow = 1, ncol = 2)
+# Deposition
+dep <- 6
+
+library (maptools)
+
+det.ws.depth <- mutate (det.ws.depth, date = trunc (datetime, units = "days") %>% as.POSIXct ()) %>%
+  ddply ("date", function (x, m.coord, dep){
+  c.dawn <- crepuscule (m.coord, first (x$date), POSIXct.out = TRUE, direction = "dawn", solarDep = dep)$time
+  c.dusk <- crepuscule (m.coord, first (x$date), POSIXct.out = TRUE, direction = "dusk", solarDep = dep)$time
+  for (i in 1:nrow (x)){
+    if (x$datetime[i] < c.dawn | x$datetime[i] > c.dusk) {
+    x$day.night.c[i] <- "NIGHT" 
+  } else {
+    x$day.night.c[i] <- "DAY"
+  }
+  }
+  return (x)
+}, m.coord = m.coord, dep = dep, .parallel = TRUE) %>% tbl_df()
+```
+
+Establish receiver configuration in case it's needed as a random factor
+
+```{r}
+pres.det <- ddply (det.ws.depth, "date", function (x, times.in){
+  # Generate weekly approximations
+    stations.listening <- filter (times.in, x$date[1] >= date.in, x$date[1] <= date.out) %>% 
+      select (station) %>%
+      unique()
+  y <- data.frame (configuration = do.call (paste, as.list(stations.listening$station)), 
+                   nStations = nrow (stations.listening))
+    return (y)
+  }, times.in = times.in) %>% tbl_df ()
+
+det.ws.depth <- inner_join (det.ws.depth, pres.det)
+```
+
+Now we include shark size as well
+
+```{r}
+det.ws.depth <- inner_join (select (det.ws.depth, -(sex)), select (ws.tags, ecocean, size, sex)) %>%
+  mutate (week = week (datetime)) %>%
+  arrange (datetime)
+```
+
+Because of the large size of the data the model fitting will take forever.
+Fuck that, let's clump it all in two-week bins, just as the previous analysis.
+
+```{r}
+det.ws.depth.2week <- det.ws.depth %>%
+  mutate (date.week = datetime %>% cut ("2 week")) %>%
+  group_by (date.week, ecocean, day.night.c) %>%
+  summarise (size = first (size),
+             sex = first (sex),
+             week = mean (week, na.rm = T),
+             depth = mean (depth, na.rm = T),
+             distance = mean (distance, na.rm = T))
+```
+
+## Fit depth
+
+First we start with the random component, 
+```{r, message = FALSE}
+library (mgcv)
+
+# Basic model
+md.r.01 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., gamma = 1.4, method = "REML")
+# With shark as a random factor
+md.r.02 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), gamma = 1.4, method = "REML")
+# Ecocean + temporal autocorrelation
+md.r.03 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corAR1 (form = ~1|ecocean), gamma = 1.4, method = "REML")
+md.r.04 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 1, q = 1), gamma = 1.4, method = "REML")
+md.r.05 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 1), gamma = 1.4, method = "REML")
+md.r.06 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 1, q = 2), gamma = 1.4, method = "REML")
+md.r.07 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "REML")
+
+md.r <- c (md.r.01, md.r.02, md.r.03, md.r.04, md.r.05, md.r.06, md.r.07)
+models.depth.random <- foreach (i = 1:length(md.r)) %dopar% md.r[[i]](det.ws.depth.2week) %>% {
+  data_frame (gam = lapply (., function (x) x$gam), 
+              lme = lapply (., function (x) x$lme))
+} %>% 
+  mutate (AIC = lme %>% lapply (function (x) AIC(x)) %>% unlist,
+          DAIC = AIC - min(AIC)) %>% 
+  arrange (AIC)
+  
+```
+
+The best random structure is the one that considers both the shark as a random factor and the correlation structure of second order for the moving average and the autocorrelation.
+
+```{r}
+md.f.01 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.02 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.03 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.04 <- . %>% gamm (depth ~ s (week, bs = 'cr') + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.05 <- . %>% gamm (depth ~ size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.06 <- . %>% gamm (depth ~ s (week, bs = 'cr')  + size , data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.07 <- . %>% gamm (depth ~ s (week, bs = 'cr') + sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.08 <- . %>% gamm (depth ~ size + sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.09 <- . %>% gamm (depth ~ s (week, bs = 'cr') + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.10 <- . %>% gamm (depth ~ size + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.11 <- . %>% gamm (depth ~ sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.12 <- . %>% gamm (depth ~ s (week, bs = 'cr'), data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.13 <- . %>% gamm (depth ~ size, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.14 <- . %>% gamm (depth ~ sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+md.f.15 <- . %>% gamm (depth ~ day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+
+md.f <- c (md.f.01, md.f.02, md.f.03, md.f.04, md.f.05, md.f.06, md.f.07, md.f.08, md.f.09, md.f.10, md.f.11, md.f.12, md.f.13, md.f.14, md.f.15)
+
+models.depth.fixed <- foreach (i = 1:length(md.f)) %dopar% md.f[[i]](det.ws.depth.2week) %>% {
+  data_frame (gam = lapply (., function (x) x$gam), 
+              lme = lapply (., function (x) x$lme))
+} %>% 
+  mutate (AIC = lme %>% lapply (function (x) AIC(x)) %>% unlist,
+          DAIC = AIC - min(AIC), 
+          formula = gam %>% lapply (function (x) formula(x)) %>% as.character) %>% 
+  arrange (AIC)
+
+models.depth.fixed %>% select (formula, AIC, DAIC) %>%
+  kable ()
+```
+
+```{r}
+models.depth.fixed$gam[1][[1]] %>% plot
+models.depth.fixed$gam[1][[1]] %>% summary
+
+```
+
+The best model is the one that includes the time of the year and the time of the day. 
+
+## Fit distance
+
 
