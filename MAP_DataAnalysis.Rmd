@@ -594,4 +594,75 @@ The best model is the one that includes the time of the year and the time of the
 
 ## Fit distance
 
+First we start with the random component, 
 
+```{r, message = FALSE}
+library (mgcv)
+
+# Basic model
+ml.r.01 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., gamma = 1.4, method = "REML")
+# With shark as a random factor
+ml.r.02 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), gamma = 1.4, method = "REML")
+# Ecocean + temporal autocorrelation
+ml.r.03 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corAR1 (form = ~1|ecocean), gamma = 1.4, method = "REML")
+ml.r.04 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 1, q = 1), gamma = 1.4, method = "REML")
+ml.r.05 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 1), gamma = 1.4, method = "REML")
+ml.r.06 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 1, q = 2), gamma = 1.4, method = "REML")
+ml.r.07 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "REML")
+
+ml.r <- c (ml.r.01, ml.r.02, ml.r.03, ml.r.04, ml.r.05, ml.r.06, ml.r.07)
+models.distance.random <- foreach (i = 1:length(ml.r)) %dopar% ml.r[[i]](det.ws.depth.2week) %>% {
+  data_frame (gam = lapply (., function (x) x$gam), 
+              lme = lapply (., function (x) x$lme))
+} %>% 
+  mutate (AIC = lme %>% lapply (function (x) AIC(x)) %>% unlist,
+          DAIC = AIC - min(AIC)) %>% 
+  arrange (AIC)
+  
+```
+
+The best random structure is the one that considers both the shark as a random factor and the correlation structure of second order for the moving average and the autocorrelation.
+
+Now we move to the fixed component
+
+```{r}
+ml.f.01 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.02 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.03 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.04 <- . %>% gamm (distance ~ s (week, bs = 'cr') + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.05 <- . %>% gamm (distance ~ size + sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.06 <- . %>% gamm (distance ~ s (week, bs = 'cr')  + size , data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.07 <- . %>% gamm (distance ~ s (week, bs = 'cr') + sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.08 <- . %>% gamm (distance ~ size + sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.09 <- . %>% gamm (distance ~ s (week, bs = 'cr') + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.10 <- . %>% gamm (distance ~ size + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.11 <- . %>% gamm (distance ~ sex + day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.12 <- . %>% gamm (distance ~ s (week, bs = 'cr'), data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.13 <- . %>% gamm (distance ~ size, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.14 <- . %>% gamm (distance ~ sex, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+ml.f.15 <- . %>% gamm (distance ~ day.night.c, data = ., random = list (ecocean = ~ 1), correlation = corARMA (form = ~1|ecocean, p = 2, q = 2), gamma = 1.4, method = "ML")
+
+ml.f <- c (ml.f.01, ml.f.02, ml.f.03, ml.f.04, ml.f.05, ml.f.06, ml.f.07, ml.f.08, ml.f.09, ml.f.10, ml.f.11, ml.f.12, ml.f.13, ml.f.14, ml.f.15)
+
+models.distance.fixed <- foreach (i = 1:length(ml.f)) %dopar% ml.f[[i]](det.ws.depth.2week) %>% {
+  data_frame (gam = lapply (., function (x) x$gam), 
+              lme = lapply (., function (x) x$lme))
+} %>% 
+  mutate (AIC = lme %>% lapply (function (x) AIC(x)) %>% unlist,
+          DAIC = AIC - min(AIC), 
+          formula = gam %>% lapply (function (x) formula(x)) %>% as.character) %>% 
+  arrange (AIC)
+
+models.distance.fixed %>% select (formula, AIC, DAIC) %>%
+  kable ()
+```
+
+The strongest support is for the model that includes size, sex and time of the day, but it's closely followed by the one that only includes size and sex. 
+
+```{r}
+models.distance.fixed$gam[1][[1]] %>% summary 
+models.distance.fixed$gam[2][[1]] %>% summary 
+models.distance.fixed$gam[2][[1]] %>% plot
+```
+
+Since the effect of time of the day is not significant in the first model, we'll go for the second one as the primary model for predictions. 
