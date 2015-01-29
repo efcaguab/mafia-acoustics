@@ -176,6 +176,50 @@ foreign.detections$TRANSMITTERID <- factor (foreign.detections$TRANSMITTERID)
 
 ## Visual data
 
+We start by reading the data frames with the ecocean information. We'll merge them all and see what we have. 
+Because all input tables have the same structure we can create a function that cleans and process the data in all of them.
+
+```{r, warning = FALSE}
+# Function to clean the data
+preprocess.databases <- . %>% 
+  # Read file
+  read.csv () %>% tbl_df () %>%
+  # Select those locations that can be in Mafia/Tanzania/Kilindoni
+  filter (grepl ("afia", Locality) | 
+            grepl ("nzania", Locality) |
+            grepl ("lindon", Locality) |
+            Location.ID == "4b") %>%
+  # Discard if the indicidual was not identified
+  filter (Marked.Individual != "") %>%
+  # Calculate date of encounter
+  mutate (date = paste (Year.Identified, 
+                        Month.Identified, 
+                        Day.Identified, 
+                        sep = "-"), 
+          date = as.Date (date)) %>%
+  filter (!is.na (date)) %>% 
+  # Use a nicer names
+  rename (ecocean = Marked.Individual) %>%
+  select (date, ecocean)
+
+uapp.enc <- "./raw-data/unapproved_20150130.csv" %>% preprocess.databases ()
+app.enc <- "./raw-data/approved_20150130.csv" %>% preprocess.databases ()
+sea.enc <- "./raw-data/approved_20150130.csv" %>% preprocess.databases ()
+
+sightings <- # Join all thre sources of information
+  bind_rows (uapp.enc, app.enc, sea.enc) %>%
+  # Remove duplicates
+  distinct ()
+
+sightings.tagged.sharks <- sightings %>% 
+  # Keep only sharks that were tagged during the first season
+  inner_join (ws.tags, by = "ecocean") %>%
+  filter (batch == "2012-1" | batch == "2012-2") %>%
+  select (date, ecocean) %>% 
+  arrange (date)
+```
+
+
 # Residency models
 
 First we write the function that calculates the probabilities. It includes the initiall as well as the final date.
