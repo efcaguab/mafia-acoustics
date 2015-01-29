@@ -174,6 +174,8 @@ foreign.detections <- anti_join (MAFIA.DETECTIONS, ddet.ws) %>%
 foreign.detections$TRANSMITTERID <- factor (foreign.detections$TRANSMITTERID)
 ```
 
+## Visual data
+
 # Residency models
 
 First we write the function that calculates the probabilities. It includes the initiall as well as the final date.
@@ -666,3 +668,62 @@ models.distance.fixed$gam[2][[1]] %>% plot
 ```
 
 Since the effect of time of the day is not significant in the first model, we'll go for the second one as the primary model for predictions. 
+
+# Residency indexes
+
+Residency index is defined as the number of days present/detected divided by the number of days monitored.
+The days monitored goes as the last day of download or the date of presumed tag loss, whatever happens first.
+
+```{r, warning=FALSE}
+# Acoustic residency index
+
+# Create base data-frame
+acoustic.res.index <- det.ws %>%
+  # Only include sharks from the first season
+  filter (batch == "2012-1" | batch == "2012-2") %>%
+  ddply ("ecocean", function (det, tag.lost, end.date){
+  # Calculate start date (first detection)
+  start.date <- det$datetime %>% min %>% as.Date
+  # See when the tag was lost for that shark
+  tag.lost.date <- tag.lost %>% filter (ecocean == det$ecocean[1]) %$% date.min[1]
+  # Calculate end date (overall monitoring day or tag lost day)
+  end.date <- min (end.date %>% as.Date, tag.lost.date, na.rm = T)
+  # Generate list of dates for that shark
+  data_frame (ecocean = det$ecocean %>% first,
+              date = seq (start.date, end.date, by = "day")) %>% 
+    return ()
+}, tag.lost = tag.lost, end.date = max (det.ws$datetime)) %>% tbl_df () %>%
+  # Populate with prescence data from the detections
+  left_join (det.ws %>%
+  mutate (date = datetime %>% as.Date) %>%
+  group_by (ecocean, date) %>%
+  summarise (present = n () >= 1)) %>%
+  # If the shark was not detected put a 0, 1 otherwise
+  mutate (present = replace (present, is.na (present), FALSE), 
+          present = present %>% as.numeric) %>% 
+  # Calculate a progressive residency index
+  ddply ("ecocean", function (x){
+    # Arrange by date
+    x %<>% arrange (date)
+    # For each date
+    foreach (i=1:nrow (x), .combine = rbind) %do% {
+      x %>% 
+        # Filter all dates until then
+        slice (1:i) %>% 
+        summarise (date = max (date),
+                   # Calculate the residency index
+                   res.index = sum (present) / n ()) 
+    }
+  }, .parallel = TRUE) %>% tbl_df ()
+
+acoustic.res.index %>%
+  ggplot (aes (x = date, y = res.index)) + 
+  geom_line (aes (group = ecocean), alpha = 0.1, colour = "#006F51") +
+  geom_smooth (formula = y ~ s(x, bs = "cs"), 
+               method = "gam", family = "binomial",
+               colour = "#006F51") +
+  theme_minimal ()
+
+```
+
+In the graph it's possible to see the indicidual residency indexes for each shark and the smoothed mean value. 
